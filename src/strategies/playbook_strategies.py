@@ -678,59 +678,195 @@ class PlaybookStrategies:
     def _trade_trend_session(self, session_df: pd.DataFrame, 
                             direction: str, 
                             aggressive: bool = False) -> List[Trade]:
-        """Trade a trend session"""
+        """
+        Trade a trend session using proper Dalton Playbook mechanics with pyramid
+        
+        Key Concepts:
+        1. Acceptance: 2x 5-min closes OR 30-min close beyond IB
+        2. Narrow IB range = compression = explosive breakout  
+        3. Initial Entry: IBH/IBL retest after acceptance
+        4. Pyramid Entries: Pullbacks to EMA after 11 AM (up to 3 pyramids)
+        5. WIDE Stop: Below IB low (trend day) - trend won't revisit this
+        6. Trail stop as we pyramid (each add moves stop up)
+        7. DPOC migration confirms trend after 11 AM
+        """
         trades = []
         
         if len(session_df) < 60:
             return trades
         
-        # Get IB
-        ib_high = session_df.iloc[:60]['high'].max()
-        ib_low = session_df.iloc[:60]['low'].min()
+        # Get IB stats
+        ib_data = session_df.iloc[:60]
+        ib_high = ib_data['high'].max()
+        ib_low = ib_data['low'].min()
         ib_range = ib_high - ib_low
+        ib_mid = (ib_high + ib_low) / 2
         
         # Trade after IB formation
-        post_ib = session_df.iloc[60:]
+        post_ib = session_df.iloc[60:].copy()
         
-        # Look for IB extension acceptance
-        for i, (timestamp, row) in enumerate(post_ib.iterrows()):
+        # Look for acceptance
+        acceptance_confirmed = False
+        acceptance_timestamp = None
+        
+        for i in range(1, len(post_ib)):
+            window = post_ib.iloc[:i+1]
+            
             if direction == 'LONG':
-                # Entry: Price above IBH with acceptance
-                if row['close'] > ib_high and row['low'] >= ib_high - 2:
-                    entry_price = row['close']
-                    stop_price = ib_low if aggressive else ib_high
-                    target_price = entry_price + (3 * (entry_price - stop_price))
-                    
-                    trade = self._simulate_trade(
-                        post_ib.iloc[i:],
-                        direction,
-                        entry_price,
-                        stop_price,
-                        target_price,
-                        timestamp,
-                        'IB_EXTENSION_ACCEPTANCE'
-                    )
-                    if trade:
-                        trades.append(trade)
-                        break  # One trade per session for now
+                # 30-min acceptance (6 bars)
+                if len(window) >= 6:
+                    last_6 = window.iloc[-6:]
+                    if (last_6['close'] > ib_high).all():
+                        acceptance_confirmed = True
+                        acceptance_timestamp = window.index[-1]
+                        break
+                # 2x 5-min acceptance
+                if len(window) >= 2:
+                    last_2 = window.iloc[-2:]
+                    if (last_2['close'] > ib_high).all():
+                        acceptance_confirmed = True
+                        acceptance_timestamp = window.index[-1]
+                        break
+            else:  # SHORT
+                if len(window) >= 6:
+                    last_6 = window.iloc[-6:]
+                    if (last_6['close'] < ib_low).all():
+                        acceptance_confirmed = True
+                        acceptance_timestamp = window.index[-1]
+                        break
+                if len(window) >= 2:
+                    last_2 = window.iloc[-2:]
+                    if (last_2['close'] < ib_low).all():
+                        acceptance_confirmed = True
+                        acceptance_timestamp = window.index[-1]
+                        break
+        
+        if not acceptance_confirmed:
+            return trades
+        
+        # PYRAMID STRATEGY: Up to 3 entries per trend day
+        max_pyramids = 3 if aggressive else 2
+        pyramid_count = 0
+        last_entry_price = None
+        last_entry_time = None
+        cooldown_bars = 20  # Wait 20 bars between pyramids
+        
+        # WIDE STOP for trend days - below IB low (longs) or above IB high (shorts)
+        # This is aggressive but appropriate for trend days
+        if direction == 'LONG':
+            base_stop = ib_low - (ib_range * 0.2)  # 20% below IB low
+        else:
+            base_stop = ib_high + (ib_range * 0.2)  # 20% above IB high
+        
+        for i, (timestamp, row) in enumerate(post_ib.iterrows()):
+            if timestamp < acceptance_timestamp:
+                continue
+            
+            # Cooldown check
+            if last_entry_time is not None:
+                bars_since_entry = i - post_ib.index.get_loc(last_entry_time) if last_entry_time in post_ib.index else 999
+                if bars_since_entry < cooldown_bars:
+                    continue
+            
+            # Get time for after-11-AM check
+            current_time = timestamp.time() if hasattr(timestamp, 'time') else timestamp
+            after_11am = False
+            if isinstance(current_time, time):
+                after_11am = current_time >= time(11, 0)
+            else:
+                try:
+                    after_11am = current_time.hour >= 11
+                except:
+                    pass
+            
+            # Check DPOC migration after 11 AM
+            dpoc_migrated = False
+            if after_11am and 'vwap' in row:
+                if direction == 'LONG' and row['vwap'] > ib_high:
+                    dpoc_migrated = True
+                elif direction == 'SHORT' and row['vwap'] < ib_low:
+                    dpoc_migrated = True
+            
+            should_enter = False
+            entry_type = ""
+            entry_price = row['close']
+            
+            if direction == 'LONG':
+                # PYRAMID 1: IBH retest (initial entry)
+                if pyramid_count == 0 and not after_11am:
+                    if row['low'] <= ib_high <= row['high']:
+                        should_enter = True
+                        entry_type = 'IBH_RETEST_INITIAL'
+                
+                # PYRAMID 2+: EMA pullback (after 11 AM or if initial missed)
+                elif pyramid_count < max_pyramids:
+                    # Either after 11 AM with DPOC migration OR we missed initial entry
+                    if (after_11am and dpoc_migrated) or (pyramid_count == 0 and after_11am):
+                        if 'ema20' in row:
+                            # Pullback to EMA20 (shallow retracement in trend)
+                            if row['low'] <= row['ema20'] <= row['high'] or row['close'] > row['ema20']:
+                                # Price near or above EMA20
+                                ema_distance_pct = abs(row['close'] - row['ema20']) / ib_range
+                                if ema_distance_pct < 0.15:  # Within 15% of IB range
+                                    should_enter = True
+                                    entry_price = row['close']
+                                    entry_type = f'EMA_PULLBACK_P{pyramid_count+1}'
             
             else:  # SHORT
-                if row['close'] < ib_low and row['high'] <= ib_low + 2:
-                    entry_price = row['close']
-                    stop_price = ib_high if aggressive else ib_low
+                # PYRAMID 1: IBL retest
+                if pyramid_count == 0 and not after_11am:
+                    if row['low'] <= ib_low <= row['high']:
+                        should_enter = True
+                        entry_type = 'IBL_RETEST_INITIAL'
+                
+                # PYRAMID 2+: EMA pullback
+                elif pyramid_count < max_pyramids:
+                    if (after_11am and dpoc_migrated) or (pyramid_count == 0 and after_11am):
+                        if 'ema20' in row:
+                            if row['low'] <= row['ema20'] <= row['high'] or row['close'] < row['ema20']:
+                                ema_distance_pct = abs(row['ema20'] - row['close']) / ib_range
+                                if ema_distance_pct < 0.15:
+                                    should_enter = True
+                                    entry_price = row['close']
+                                    entry_type = f'EMA_PULLBACK_P{pyramid_count+1}'
+            
+            if should_enter:
+                # WIDE STOP - trail as we pyramid
+                # First pyramid: Wide stop at IB structure
+                # Subsequent pyramids: Trail stop to previous entry
+                if pyramid_count == 0:
+                    stop_price = base_stop
+                else:
+                    # Trail stop to breakeven of previous entry or better
+                    if direction == 'LONG':
+                        stop_price = max(base_stop, last_entry_price - (ib_range * 0.3))
+                    else:
+                        stop_price = min(base_stop, last_entry_price + (ib_range * 0.3))
+                
+                # Target: 3:1 R:R from average entry
+                if direction == 'LONG':
+                    target_price = entry_price + (3 * (entry_price - stop_price))
+                else:
                     target_price = entry_price - (3 * (stop_price - entry_price))
+                
+                trade = self._simulate_trade(
+                    post_ib.iloc[i:],
+                    direction,
+                    entry_price,
+                    stop_price,
+                    target_price,
+                    timestamp,
+                    entry_type
+                )
+                
+                if trade:
+                    trades.append(trade)
+                    pyramid_count += 1
+                    last_entry_price = entry_price
+                    last_entry_time = timestamp
                     
-                    trade = self._simulate_trade(
-                        post_ib.iloc[i:],
-                        direction,
-                        entry_price,
-                        stop_price,
-                        target_price,
-                        timestamp,
-                        'IB_EXTENSION_ACCEPTANCE'
-                    )
-                    if trade:
-                        trades.append(trade)
+                    # If we've hit max pyramids, we're done with this session
+                    if pyramid_count >= max_pyramids:
                         break
         
         return trades
