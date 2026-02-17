@@ -16,19 +16,19 @@ def get_volume_profile(df_extended, df_current, current_time_str="11:45"):
 
     # Previous day from extended df
     current_date = pd.to_datetime(df_extended['session_date'].max())
-    all_dates = pd.to_datetime(df_extended['session_date'].unique()).sort_values()
+    all_dates = pd.Series(pd.to_datetime(df_extended['session_date'].unique())).sort_values()
     previous_dates = all_dates[all_dates < current_date]
     if previous_dates.empty:
         prev_day_df = pd.DataFrame()
     else:
-        prev_day = previous_dates[-1]
+        prev_day = previous_dates.iloc[-1]
         prev_day_str = prev_day.strftime('%Y-%m-%d')
         prev_day_df = df_extended[df_extended['session_date'] == prev_day_str]
 
     # Previous 3 days from extended df
-    all_dates = pd.to_datetime(df_extended['session_date'].unique()).sort_values()
-    prev_3_dates = all_dates[all_dates < current_date][-3:]
-    prev_3_df = df_extended[df_extended['session_date'].isin(prev_3_dates.strftime('%Y-%m-%d'))]
+    all_dates = pd.Series(pd.to_datetime(df_extended['session_date'].unique())).sort_values()
+    prev_3_dates = all_dates[all_dates < current_date].iloc[-3:]
+    prev_3_df = df_extended[df_extended['session_date'].isin(prev_3_dates.dt.strftime('%Y-%m-%d'))]
 
     def calculate_profile(df):
         if df.empty:

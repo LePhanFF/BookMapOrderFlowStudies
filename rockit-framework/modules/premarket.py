@@ -43,22 +43,22 @@ def get_premarket(df_nq, df_es=None, df_ym=None, session_date=None):
     compression_ratio = round(london_range / on_range, 3) if on_range > 0 else 0.0
 
     # Previous day high/low: find the last trading day before current
-    all_dates_prev = pd.to_datetime(df_nq['session_date'].unique()).sort_values()
+    all_dates_prev = pd.Series(pd.to_datetime(df_nq['session_date'].unique())).sort_values()
     previous_dates = all_dates_prev[all_dates_prev < current_date]
     if previous_dates.empty:
         prev_day_high = float('nan')
         prev_day_low = float('nan')
     else:
-        prev_day = previous_dates[-1]
+        prev_day = previous_dates.iloc[-1]
         prev_day_str = prev_day.strftime('%Y-%m-%d')
         prev_day_df = df_nq[df_nq['session_date'] == prev_day_str]
         prev_day_high = prev_day_df['high'].max() if not prev_day_df.empty else float('nan')
         prev_day_low = prev_day_df['low'].min() if not prev_day_df.empty else float('nan')
 
     # Previous week high/low: last 5 unique session_dates before current
-    all_dates = pd.to_datetime(df_nq['session_date'].unique()).sort_values()
-    prev_dates = all_dates[all_dates < current_date][-5:]  # last 5 before today
-    prev_week_df = df_nq[df_nq['session_date'].isin(prev_dates.strftime('%Y-%m-%d'))]
+    all_dates = pd.Series(pd.to_datetime(df_nq['session_date'].unique())).sort_values()
+    prev_dates = all_dates[all_dates < current_date].iloc[-5:]  # last 5 before today
+    prev_week_df = df_nq[df_nq['session_date'].isin(prev_dates.dt.strftime('%Y-%m-%d'))]
     prev_week_high = prev_week_df['high'].max() if not prev_week_df.empty else float('nan')
     prev_week_low = prev_week_df['low'].min() if not prev_week_df.empty else float('nan')
 

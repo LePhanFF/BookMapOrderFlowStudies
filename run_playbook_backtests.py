@@ -20,39 +20,30 @@ sys.path.append('/home/lphan/jupyterlab/BookMapOrderFlowStudies')
 
 from src.strategies.trend_day_strategy import TrendDayStrategy
 from src.strategies.b_day_strategy import BDayStrategy
-from src.data.yahoo_loader import get_futures_data
+from data_loader import load_data
 
 
-def load_or_download_data(symbol: str = 'MNQ=F', 
-                          period: str = "90d",
-                          use_existing: bool = True) -> pd.DataFrame:
+def load_existing_data(symbol: str = 'NQ') -> pd.DataFrame:
     """
-    Load data from CSV or download from Yahoo Finance
+    Load existing volumetric data from csv folder
     """
-    csv_path = f'csv/{symbol.replace("=", "")}_volumetric.csv'
+    print(f"Loading existing data for {symbol}...")
     
-    if use_existing:
-        try:
-            print(f"Loading existing data from {csv_path}...")
-            df = pd.read_csv(csv_path)
-            print(f"  Loaded {len(df)} rows")
-            return df
-        except FileNotFoundError:
-            print(f"  CSV not found, downloading from Yahoo...")
-    
-    # Download from Yahoo
-    print(f"Downloading {symbol} data from Yahoo Finance...")
-    df = get_futures_data(symbol, period=period, interval="5m")
-    
-    if not df.empty:
-        # Save for future use
-        df.to_csv(csv_path, index=False)
-        print(f"  Saved to {csv_path}")
-    
-    return df
+    try:
+        # Use existing data loader
+        df = load_data(symbol)
+        print(f"  Loaded {len(df)} rows")
+        print(f"  Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+        return df
+        
+    except Exception as e:
+        print(f"ERROR loading data: {e}")
+        import traceback
+        traceback.print_exc()
+        return pd.DataFrame()
 
 
-def run_all_strategies(symbol: str = 'MNQ'):
+def run_all_strategies(symbol: str = 'NQ'):
     """
     Run all playbook strategies separately and compare results
     """
@@ -64,8 +55,7 @@ def run_all_strategies(symbol: str = 'MNQ'):
     print()
     
     # Load data
-    futures_symbol = 'MNQ=F' if symbol == 'MNQ' else 'MES=F'
-    df = load_or_download_data(futures_symbol, period="90d")
+    df = load_existing_data(symbol)
     
     if df.empty:
         print("ERROR: No data loaded!")
@@ -145,7 +135,7 @@ if __name__ == '__main__':
     print()
     
     # Run backtests
-    results = run_all_strategies(symbol='MNQ')
+    results = run_all_strategies(symbol='NQ')
     
     print("\n" + "=" * 70)
     print("BACKTEST COMPLETE")
