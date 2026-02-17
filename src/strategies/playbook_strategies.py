@@ -679,16 +679,14 @@ class PlaybookStrategies:
                             direction: str, 
                             aggressive: bool = False) -> List[Trade]:
         """
-        Trade a trend session using proper Dalton Playbook mechanics with pyramid
+        Dalton Trend Day Strategy - PYRAMID IN MORNING, HOLD FOR TARGET
         
-        Key Concepts:
-        1. Acceptance: 2x 5-min closes OR 30-min close beyond IB
-        2. Narrow IB range = compression = explosive breakout  
-        3. Initial Entry: IBH/IBL retest after acceptance
-        4. Pyramid Entries: Pullbacks to EMA after 11 AM (up to 3 pyramids)
-        5. WIDE Stop: Below IB low (trend day) - trend won't revisit this
-        6. Trail stop as we pyramid (each add moves stop up)
-        7. DPOC migration confirms trend after 11 AM
+        DALTON RULES:
+        1. Trend Day: Enter and hold for target (don't micromanage)
+        2. Strong Trend: Pyramid on EMA/FVG pullbacks until London close (11:30 AM)
+        3. After 13:00: Trail stops, take partials, no new pyramids
+        4. Wide stop below IB low (trend won't revisit)
+        5. Target: 2.5-3x IB range (trends seek liquidity)
         """
         trades = []
         
@@ -700,7 +698,6 @@ class PlaybookStrategies:
         ib_high = ib_data['high'].max()
         ib_low = ib_data['low'].min()
         ib_range = ib_high - ib_low
-        ib_mid = (ib_high + ib_low) / 2
         
         # Trade after IB formation
         post_ib = session_df.iloc[60:].copy()
@@ -713,14 +710,12 @@ class PlaybookStrategies:
             window = post_ib.iloc[:i+1]
             
             if direction == 'LONG':
-                # 30-min acceptance (6 bars)
                 if len(window) >= 6:
                     last_6 = window.iloc[-6:]
                     if (last_6['close'] > ib_high).all():
                         acceptance_confirmed = True
                         acceptance_timestamp = window.index[-1]
                         break
-                # 2x 5-min acceptance
                 if len(window) >= 2:
                     last_2 = window.iloc[-2:]
                     if (last_2['close'] > ib_high).all():
@@ -744,15 +739,14 @@ class PlaybookStrategies:
         if not acceptance_confirmed:
             return trades
         
-        # PYRAMID STRATEGY: Up to 3 entries per trend day
-        max_pyramids = 3 if aggressive else 2
+        # PYRAMID STRATEGY - until London close (~11:30 AM)
         pyramid_count = 0
+        max_pyramids = 3 if aggressive else 2
         last_entry_price = None
         last_entry_time = None
-        cooldown_bars = 20  # Wait 20 bars between pyramids
+        cooldown_bars = 12  # ~1 hour between pyramids
         
-        # WIDE STOP for trend days - below IB low (longs) or above IB high (shorts)
-        # This is aggressive but appropriate for trend days
+        # WIDE STOP - below IB structure
         if direction == 'LONG':
             base_stop = ib_low - (ib_range * 0.2)  # 20% below IB low
         else:
@@ -768,95 +762,87 @@ class PlaybookStrategies:
                 if bars_since_entry < cooldown_bars:
                     continue
             
-            # Get time for after-11-AM check
+            # Get time
             current_time = timestamp.time() if hasattr(timestamp, 'time') else timestamp
-            after_11am = False
+            after_1130am = False
+            after_1pm = False
             if isinstance(current_time, time):
-                after_11am = current_time >= time(11, 0)
+                after_1130am = current_time >= time(11, 30)
+                after_1pm = current_time >= time(13, 0)
             else:
                 try:
-                    after_11am = current_time.hour >= 11
+                    after_1130am = current_time.hour >= 11 and current_time.minute >= 30
+                    after_1pm = current_time.hour >= 13
                 except:
                     pass
             
-            # Check DPOC migration after 11 AM
-            dpoc_migrated = False
-            if after_11am and 'vwap' in row:
-                if direction == 'LONG' and row['vwap'] > ib_high:
-                    dpoc_migrated = True
-                elif direction == 'SHORT' and row['vwap'] < ib_low:
-                    dpoc_migrated = True
+            # NO new pyramids after London close (11:30 AM)
+            if after_1130am:
+                break
             
             should_enter = False
             entry_type = ""
             entry_price = row['close']
             
             if direction == 'LONG':
-                # PYRAMID 1: IBH retest (initial entry)
-                if pyramid_count == 0 and not after_11am:
+                # Entry 1: IBH retest (initial)
+                if pyramid_count == 0:
                     if row['low'] <= ib_high <= row['high']:
                         should_enter = True
-                        entry_type = 'IBH_RETEST_INITIAL'
+                        entry_type = 'IBH_RETEST'
                 
-                # PYRAMID 2+: EMA pullback (after 11 AM or if initial missed)
+                # Entry 2+: EMA pullback or 15-min FVG
                 elif pyramid_count < max_pyramids:
-                    # Either after 11 AM with DPOC migration OR we missed initial entry
-                    if (after_11am and dpoc_migrated) or (pyramid_count == 0 and after_11am):
-                        if 'ema20' in row:
-                            # Pullback to EMA20 (shallow retracement in trend)
-                            if row['low'] <= row['ema20'] <= row['high'] or row['close'] > row['ema20']:
-                                # Price near or above EMA20
-                                ema_distance_pct = abs(row['close'] - row['ema20']) / ib_range
-                                if ema_distance_pct < 0.15:  # Within 15% of IB range
-                                    should_enter = True
-                                    entry_price = row['close']
-                                    entry_type = f'EMA_PULLBACK_P{pyramid_count+1}'
+                    if 'ema20' in row:
+                        # Shallow pullback to EMA20
+                        if row['close'] > row['ema20']:
+                            ema_distance = (row['close'] - row['ema20']) / ib_range
+                            if ema_distance < 0.12:  # Within 12% of IB range
+                                should_enter = True
+                                entry_price = row['close']
+                                entry_type = f'EMA_PULLBACK_P{pyramid_count+1}'
             
             else:  # SHORT
-                # PYRAMID 1: IBL retest
-                if pyramid_count == 0 and not after_11am:
+                if pyramid_count == 0:
                     if row['low'] <= ib_low <= row['high']:
                         should_enter = True
-                        entry_type = 'IBL_RETEST_INITIAL'
+                        entry_type = 'IBL_RETEST'
                 
-                # PYRAMID 2+: EMA pullback
                 elif pyramid_count < max_pyramids:
-                    if (after_11am and dpoc_migrated) or (pyramid_count == 0 and after_11am):
-                        if 'ema20' in row:
-                            if row['low'] <= row['ema20'] <= row['high'] or row['close'] < row['ema20']:
-                                ema_distance_pct = abs(row['ema20'] - row['close']) / ib_range
-                                if ema_distance_pct < 0.15:
-                                    should_enter = True
-                                    entry_price = row['close']
-                                    entry_type = f'EMA_PULLBACK_P{pyramid_count+1}'
+                    if 'ema20' in row:
+                        if row['close'] < row['ema20']:
+                            ema_distance = (row['ema20'] - row['close']) / ib_range
+                            if ema_distance < 0.12:
+                                should_enter = True
+                                entry_price = row['close']
+                                entry_type = f'EMA_PULLBACK_P{pyramid_count+1}'
             
             if should_enter:
-                # WIDE STOP - trail as we pyramid
-                # First pyramid: Wide stop at IB structure
-                # Subsequent pyramids: Trail stop to previous entry
+                # Trail stop after pyramids
                 if pyramid_count == 0:
                     stop_price = base_stop
                 else:
-                    # Trail stop to breakeven of previous entry or better
                     if direction == 'LONG':
-                        stop_price = max(base_stop, last_entry_price - (ib_range * 0.3))
+                        stop_price = max(base_stop, last_entry_price - (ib_range * 0.25))
                     else:
-                        stop_price = min(base_stop, last_entry_price + (ib_range * 0.3))
+                        stop_price = min(base_stop, last_entry_price + (ib_range * 0.25))
                 
-                # Target: 3:1 R:R from average entry
+                # TARGET: 2.5x IB range (Dalton: trends seek liquidity)
                 if direction == 'LONG':
-                    target_price = entry_price + (3 * (entry_price - stop_price))
+                    target_price = entry_price + (2.5 * ib_range)
                 else:
-                    target_price = entry_price - (3 * (stop_price - entry_price))
+                    target_price = entry_price - (2.5 * ib_range)
                 
-                trade = self._simulate_trade(
+                # Simulate trade with PM management
+                trade = self._simulate_trend_trade(
                     post_ib.iloc[i:],
                     direction,
                     entry_price,
                     stop_price,
                     target_price,
                     timestamp,
-                    entry_type
+                    entry_type,
+                    ib_high if direction == 'LONG' else ib_low
                 )
                 
                 if trade:
@@ -865,7 +851,6 @@ class PlaybookStrategies:
                     last_entry_price = entry_price
                     last_entry_time = timestamp
                     
-                    # If we've hit max pyramids, we're done with this session
                     if pyramid_count >= max_pyramids:
                         break
         
@@ -930,6 +915,153 @@ class PlaybookStrategies:
             pnl = (entry_price - exit_price) * self.point_value
         
         # Calculate contracts based on risk
+        risk_per_contract = abs(entry_price - stop_price) * self.point_value
+        if risk_per_contract > 0:
+            contracts = int(self.risk_per_trade / risk_per_contract)
+            contracts = max(1, min(contracts, 30))
+        else:
+            contracts = 1
+        
+        total_pnl = pnl * contracts
+        
+        return Trade(
+            entry_time=entry_time,
+            exit_time=exit_time,
+            direction=direction,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            contracts=contracts,
+            pnl=total_pnl,
+            exit_reason=exit_reason,
+            setup_type=setup_type,
+            day_type='trend'
+        )
+    
+    def _simulate_trend_trade(self, future_df: pd.DataFrame,
+                             direction: str,
+                             entry_price: float,
+                             stop_price: float,
+                             target_price: float,
+                             entry_time: datetime,
+                             setup_type: str,
+                             vwap_level: float) -> Optional[Trade]:
+        """
+        Simulate trend trade with PM management
+        
+        DALTON RULES:
+        1. After 13:00, trend can retrace to VWAP/VAH/VAL
+        2. If VWAP breached in PM, trend is likely over - exit
+        3. Trail stop to breakeven once in profit after 13:00
+        4. Exit before 15:30 (profit taking risk)
+        5. No new pyramids after 13:00
+        """
+        if len(future_df) < 2:
+            return None
+        
+        # Skip entry bar
+        future_df = future_df.iloc[1:].copy()
+        
+        exit_price = None
+        exit_time = None
+        exit_reason = None
+        current_stop = stop_price
+        in_profit = False
+        
+        for timestamp, row in future_df.iterrows():
+            # Get time
+            current_time = timestamp.time() if hasattr(timestamp, 'time') else timestamp
+            after_1pm = False
+            after_330pm = False
+            if isinstance(current_time, time):
+                after_1pm = current_time >= time(13, 0)
+                after_330pm = current_time >= time(15, 30)
+            else:
+                try:
+                    after_1pm = current_time.hour >= 13
+                    after_330pm = current_time.hour >= 15 and current_time.minute >= 30
+                except:
+                    pass
+            
+            # Check if in profit
+            if direction == 'LONG':
+                in_profit = row['close'] > entry_price
+            else:
+                in_profit = row['close'] < entry_price
+            
+            # PM MANAGEMENT: After 13:00
+            if after_1pm:
+                # Trail stop to breakeven if in profit
+                if in_profit:
+                    if direction == 'LONG':
+                        current_stop = max(current_stop, entry_price)
+                    else:
+                        current_stop = min(current_stop, entry_price)
+                
+                # Check VWAP breach - trend failure
+                if direction == 'LONG':
+                    # For longs, VWAP level is IB high (support)
+                    # If price breaks below VWAP significantly, trend over
+                    if 'vwap' in row and row['close'] < row['vwap'] - 10:
+                        exit_price = row['close']
+                        exit_time = timestamp
+                        exit_reason = 'VWAP_BREACH_PM'
+                        break
+                else:  # SHORT
+                    if 'vwap' in row and row['close'] > row['vwap'] + 10:
+                        exit_price = row['close']
+                        exit_time = timestamp
+                        exit_reason = 'VWAP_BREACH_PM'
+                        break
+            
+            # EOD EXIT: Before 15:30 (profit taking risk)
+            if after_330pm:
+                exit_price = row['close']
+                exit_time = timestamp
+                exit_reason = 'EOD_PROFIT_TAKING'
+                break
+            
+            # Check stop/target
+            if direction == 'LONG':
+                if row['low'] <= current_stop:
+                    exit_price = current_stop
+                    exit_time = timestamp
+                    exit_reason = 'STOP'
+                    break
+                elif row['high'] >= target_price:
+                    exit_price = target_price
+                    exit_time = timestamp
+                    exit_reason = 'TARGET'
+                    break
+            else:  # SHORT
+                if row['high'] >= current_stop:
+                    exit_price = current_stop
+                    exit_time = timestamp
+                    exit_reason = 'STOP'
+                    break
+                elif row['low'] <= target_price:
+                    exit_price = target_price
+                    exit_time = timestamp
+                    exit_reason = 'TARGET'
+                    break
+        
+        # Time exit if still open
+        if exit_price is None and len(future_df) > 0:
+            exit_price = future_df.iloc[-1]['close']
+            exit_time = future_df.index[-1]
+            exit_reason = 'TIME'
+        
+        if exit_price is None:
+            return None
+        
+        # Calculate P&L
+        if direction == 'LONG':
+            pnl = (exit_price - entry_price) * self.point_value
+        else:
+            pnl = (entry_price - exit_price) * self.point_value
+        
+        # Calculate contracts
         risk_per_contract = abs(entry_price - stop_price) * self.point_value
         if risk_per_contract > 0:
             contracts = int(self.risk_per_trade / risk_per_contract)
