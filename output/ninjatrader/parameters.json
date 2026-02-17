@@ -1,0 +1,22 @@
+{
+  "instrument": "MNQ",
+  "timeframe": "1 Minute",
+  "session_start": "09:30",
+  "session_end": "15:30",
+  "ib_minutes": 60,
+  "delta_period": 20,
+  "delta_threshold": 80,
+  "imbalance_threshold": 85,
+  "volume_spike_multiplier": 1.5,
+  "atr_period": 14,
+  "ema_fast": 20,
+  "ema_slow": 50,
+  "stop_ib_buffer": 0.2,
+  "target_ib_multiple": 2.5,
+  "max_hold_bars": 120,
+  "max_contracts": 30,
+  "max_daily_loss": 2000,
+  "max_consecutive_losses": 5,
+  "trail_to_be_after_pm": true,
+  "vwap_breach_exit": true
+}

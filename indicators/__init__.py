@@ -1,0 +1,1 @@
+from indicators.technical import add_all_indicators
