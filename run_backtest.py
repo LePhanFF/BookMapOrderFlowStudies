@@ -32,7 +32,7 @@ from filters.composite import CompositeFilter
 from filters.time_filter import TimeFilter
 from filters.volatility_filter import VolatilityFilter
 from filters.trend_filter import TrendFilter
-from filters.order_flow_filter import DeltaFilter, CVDFilter
+from filters.order_flow_filter import DeltaFilter, CVDFilter, VolumeFilter
 from reporting.metrics import compute_metrics, print_metrics
 from reporting.trade_log import export_trade_log, print_trade_summary
 from reporting.comparison import (
@@ -51,13 +51,21 @@ def build_default_filters():
 
 
 def build_strict_filters():
-    """Build a stricter filter chain with order flow requirements."""
+    """Build a stricter filter chain with order flow requirements.
+
+    Note: CVDFilter was REMOVED after deep order flow study (diagnostic_deep_orderflow.py)
+    showed it HURTS performance — CVD > MA is 67% in winners but 100% in losers.
+    B-Day entries naturally have CVD < MA (balance day), so CVDFilter kills B-Day trades.
+
+    DeltaFilter(pctl>=60) and VolumeFilter(spike>=1.0) are the data-proven filters:
+      - DeltaFilter(pctl>=60): 11/12 winners pass, 1/2 losers rejected → 91.7% WR
+      - VolumeFilter(spike>=1.0): 12/12 winners pass, 1/2 losers rejected
+    """
     return CompositeFilter([
         TimeFilter(start=time(10, 30), end=time(15, 0)),
         VolatilityFilter(min_atr=8.0, max_atr=60.0),
-        TrendFilter(min_adx=20.0),
-        DeltaFilter(min_percentile=70.0),
-        CVDFilter(),
+        DeltaFilter(min_percentile=60.0),
+        VolumeFilter(min_spike=1.0),
     ])
 
 

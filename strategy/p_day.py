@@ -148,6 +148,22 @@ class PDayStrategy(StrategyBase):
                 if pre_delta_sum < -500:
                     return None
 
+                # --- Order Flow Quality Gate (Deep OF Study findings) ---
+                # Require at least 2 of 3 order flow signals to be positive:
+                # delta_percentile >= 60, imbalance > 1.0, volume_spike >= 1.0
+                # This catches entries where all OF signals are bearish.
+                delta_pctl = bar.get('delta_percentile', 50)
+                imbalance = bar.get('imbalance_ratio', 1.0)
+                vol_spike = bar.get('volume_spike', 1.0)
+
+                of_quality = sum([
+                    (delta_pctl >= 60) if not pd.isna(delta_pctl) else True,
+                    (imbalance > 1.0) if not pd.isna(imbalance) else True,
+                    (vol_spike >= 1.0) if not pd.isna(vol_spike) else True,
+                ])
+                if of_quality < 2:
+                    return None
+
                 stop = vwap - (self._ib_range * STOP_VWAP_BUFFER)
                 stop = min(stop, current_price - STOP_MINIMUM_PTS)
                 if current_price - stop >= STOP_MINIMUM_PTS:

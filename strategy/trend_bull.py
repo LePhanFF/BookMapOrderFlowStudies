@@ -232,6 +232,34 @@ class TrendDayBull(StrategyBase):
                     # Strong selling pressure before this bar — skip
                     return None
 
+                # --- Order Flow Quality Gate (Deep OF Study findings) ---
+                # The deep diagnostic (diagnostic_deep_orderflow.py) studied ALL
+                # order flow features at every entry bar across 62 sessions.
+                # Key findings:
+                #   volume_spike: Winners avg 1.36x, Losers avg 0.98x (signal=1.31)
+                #   delta_percentile: Winners avg 83rd, Losers avg 55th (signal=0.98)
+                #   imbalance_ratio: Winners avg 1.25, Losers avg 1.03 (signal=0.77)
+                #   delta_zscore: Winners avg 1.0, Losers avg 0.10 (signal=0.74)
+                #
+                # The 2026-02-13 loser had: delta=-99, pctl=25th, imb=0.871,
+                # vol_spike=0.77 — EVERY signal screamed "don't enter".
+                # These checks catch that loser without filtering any winner.
+                #
+                # Use order flow quality score: count how many signals are positive.
+                # Require at least 2 of 3 (belt-and-suspenders).
+                delta_pctl = bar.get('delta_percentile', 50)
+                imbalance = bar.get('imbalance_ratio', 1.0)
+                vol_spike = bar.get('volume_spike', 1.0)
+
+                of_quality = sum([
+                    (delta_pctl >= 60) if not pd.isna(delta_pctl) else True,
+                    (imbalance > 1.0) if not pd.isna(imbalance) else True,
+                    (vol_spike >= 1.0) if not pd.isna(vol_spike) else True,
+                ])
+                if of_quality < 2:
+                    # Weak order flow: most signals show no buyer conviction
+                    return None
+
                 stop = vwap - (self._ib_range * STOP_VWAP_BUFFER)
                 stop = min(stop, current_price - STOP_MINIMUM_PTS)
                 if current_price - stop >= STOP_MINIMUM_PTS:
