@@ -9,6 +9,7 @@ from strategy.b_day import BDayStrategy
 from strategy.neutral_day import NeutralDayStrategy
 from strategy.pm_morph import PMMorphStrategy
 from strategy.morph_to_trend import MorphToTrendStrategy
+from strategy.edge_fade import EdgeFadeStrategy
 
 ALL_STRATEGIES = [
     TrendDayBull,
@@ -20,16 +21,19 @@ ALL_STRATEGIES = [
     NeutralDayStrategy,
     PMMorphStrategy,
     MorphToTrendStrategy,
+    EdgeFadeStrategy,
 ]
 
 # Core strategies with demonstrated positive edge
 # Trend Bear and SuperTrend Bear removed: 25% WR, negative expectancy
 # NQ has strong long bias — short strategies consistently underperform
+# Edge Fade added: fills trade frequency gap (47/62 sessions vs 10/62 for Playbook)
 CORE_STRATEGIES = [
     TrendDayBull,
     SuperTrendBull,
     PDayStrategy,
     BDayStrategy,
+    EdgeFadeStrategy,
 ]
 
 

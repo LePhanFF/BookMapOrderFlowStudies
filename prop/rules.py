@@ -75,7 +75,11 @@ MNQ_COMMISSION_PER_SIDE = 0.62  # $0.62 per contract per side
 MNQ_COMMISSION_RT = MNQ_COMMISSION_PER_SIDE * 2  # $1.24 round-trip
 
 # --- Simulation Parameters ---
-TRADE_FREQUENCY = 12 / 62  # 19.4% - from v13 backtest (12 trades in 62 sessions)
+TRADE_FREQUENCY = 38 / 62  # 61.3% - from v14 backtest (38 sessions with trades / 62 total)
+# v14 added Edge Fade (EDGE_TO_MID) which fires on b_day/neutral sessions
+# Average ~1.8 trades/session (110 trades / 62 sessions raw, 42 deduped / 62)
+# Multi-trade sessions: ~10% of active sessions have 2+ distinct entries
+MULTI_TRADE_PROBABILITY = 0.10  # Probability of 2nd trade on active sessions
 TRADING_DAYS_PER_MONTH = 21
 MONTE_CARLO_RUNS = 10_000
 SIM_DURATION_DAYS = 504  # 2 years of trading days

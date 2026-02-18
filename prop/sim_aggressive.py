@@ -23,35 +23,43 @@ from prop.pipeline import PropPipeline
 
 
 # ============================================================================
-#  TRADE DATA FROM v13 BACKTEST
+#  TRADE DATA FROM v14 BACKTEST (Edge Fade + Playbook)
 # ============================================================================
 
 def load_trade_data():
-    """Load and deduplicate trade data, tagging each with setup info."""
-    trade_log = pd.read_csv(project_root / 'output' / 'trade_log.csv')
+    """
+    Load and deduplicate v14 trade data.
 
-    # Deduplicate to unique sessions (Trend Bull + P-Day fire on same bar)
-    # For each session, keep the BEST trade and also track the B-Day separately
+    v14 includes Edge Fade (EDGE_TO_MID) which fires multiple times per session
+    on b_day/neutral days. Deduplication rules:
+    - Trend Bull + P-Day fire on same bar -> keep one (identical signals)
+    - B-Day always kept (different setup type)
+    - Edge Fade: keep first entry per session (representative for sim pool)
+    - Multiple Edge Fade entries modeled via MULTI_TRADE_PROBABILITY in sim
+    """
+    # Try v14 log first, fall back to v13
+    v14_path = project_root / 'output' / 'trade_log_v14.csv'
+    v13_path = project_root / 'output' / 'trade_log.csv'
+    trade_log_path = v14_path if v14_path.exists() else v13_path
+    trade_log = pd.read_csv(trade_log_path)
+
+    # Deduplicate: keep one representative trade per (session, strategy_group)
     seen_sessions = {}
     for _, trade in trade_log.iterrows():
         session = trade['session_date'][:10]
-        key = (session, trade['strategy_name'])
+        strategy = trade['strategy_name']
+
+        # Group Trend Bull + P-Day together (identical signals)
+        if strategy in ('Trend Day Bull', 'P-Day'):
+            key = (session, 'TrendPDay')
+        else:
+            key = (session, strategy)
+
         if key not in seen_sessions:
             seen_sessions[key] = trade
 
-    # Now deduplicate to unique sessions, but preserve B-Day vs Trend/P-Day distinction
-    session_trades = []
-    sessions_seen = set()
-    for (session, strategy), trade in seen_sessions.items():
-        if strategy == 'B-Day':
-            # B-Day always gets its own entry (different setup type)
-            session_trades.append(trade)
-            sessions_seen.add(session)
-        elif session not in sessions_seen:
-            # Trend/P-Day: pick the first one (they're identical signals)
-            session_trades.append(trade)
-            sessions_seen.add(session)
-
+    # Build deduplicated list preserving all strategy types
+    session_trades = list(seen_sessions.values())
     return session_trades
 
 
@@ -65,6 +73,7 @@ def build_trade_pool(session_trades):
       - setup_type: for Type A/B classification
       - confidence: from trade data (or inferred)
       - stop_distance_pts: distance from entry to stop in points
+      - source: 'playbook' or 'edge_fade' for sim weighting
     """
     sizer = PropSizer()
     pool = []
@@ -95,6 +104,9 @@ def build_trade_pool(session_trades):
 
         grade = sizer.classify_setup(strategy_name, setup_type, confidence)
 
+        # Source tracking for sim weighting
+        source = 'edge_fade' if strategy_name == 'Edge Fade' else 'playbook'
+
         pool.append({
             'points': pts,
             'strategy_name': strategy_name,
@@ -103,6 +115,7 @@ def build_trade_pool(session_trades):
             'grade': grade,
             'stop_distance_pts': stop_dist,
             'is_winner': t['is_winner'],
+            'source': source,
         })
 
     return pool
@@ -113,46 +126,78 @@ def build_trade_pool(session_trades):
 # ============================================================================
 
 def build_scenarios(trade_pool):
-    """Build 3 performance scenarios from the trade pool."""
-    winner_pts = [t['points'] for t in trade_pool if t['is_winner']]
-    # Separate by grade for proper modeling
+    """
+    Build 3 performance scenarios from the v14 trade pool.
+
+    v14 portfolio is split: Playbook (80% WR, $222/trade) + Edge Fade (53% WR, $86/trade).
+    Scenarios model degradation from backtest to live trading.
+    """
+    # Separate by source for proper modeling
+    playbook_trades = [t for t in trade_pool if t['source'] == 'playbook']
+    edge_fade_trades = [t for t in trade_pool if t['source'] == 'edge_fade']
+
+    playbook_winner_pts = [t['points'] for t in playbook_trades if t['is_winner']]
+    edge_fade_winner_pts = [t['points'] for t in edge_fade_trades if t['is_winner']]
+    all_winner_pts = [t['points'] for t in trade_pool if t['is_winner']]
+
+    # Type A/B breakdown
     type_a_trades = [t for t in trade_pool if t['grade'] == 'A']
     type_b_trades = [t for t in trade_pool if t['grade'] == 'B']
 
-    # Stop distances by grade
     avg_stop_a = np.mean([t['stop_distance_pts'] for t in type_a_trades]) if type_a_trades else 50.0
-    avg_stop_b = np.mean([t['stop_distance_pts'] for t in type_b_trades]) if type_b_trades else 80.0
+    avg_stop_b = np.mean([t['stop_distance_pts'] for t in type_b_trades]) if type_b_trades else 50.0
 
-    # Fraction of Type A trades
-    type_a_frac = len(type_a_trades) / len(trade_pool) if trade_pool else 0.3
+    type_a_frac = len(type_a_trades) / len(trade_pool) if trade_pool else 0.1
+
+    # Edge Fade fraction of all trades (for blended WR modeling)
+    edge_fade_frac = len(edge_fade_trades) / len(trade_pool) if trade_pool else 0.7
+
+    # Edge Fade loss points from actual data
+    edge_fade_loss_pts = [t['points'] for t in edge_fade_trades if not t['is_winner']]
+    playbook_loss_pts = [t['points'] for t in playbook_trades if not t['is_winner']]
 
     scenarios = {
-        'Backtest-Exact (80% WR)': {
-            'win_rate': 0.80,
-            'winner_pts': winner_pts,
-            'winner_haircut': 1.0,  # No degradation
-            'loss_pts_range': (-0.25, -0.25),  # Breakeven stops only
+        'Backtest-Exact (58% WR)': {
+            'win_rate_playbook': 0.80,
+            'win_rate_edge_fade': 0.533,
+            'playbook_winner_pts': playbook_winner_pts,
+            'edge_fade_winner_pts': edge_fade_winner_pts,
+            'all_winner_pts': all_winner_pts,
+            'winner_haircut': 1.0,
+            'edge_fade_loss_pts': edge_fade_loss_pts if edge_fade_loss_pts else [-50],
+            'playbook_loss_pts': playbook_loss_pts if playbook_loss_pts else [-0.25],
             'type_a_frac': type_a_frac,
             'avg_stop_a': avg_stop_a,
             'avg_stop_b': avg_stop_b,
+            'edge_fade_frac': edge_fade_frac,
         },
-        'Realistic Live (70% WR)': {
-            'win_rate': 0.70,
-            'winner_pts': winner_pts,
-            'winner_haircut': 0.80,  # 20% reduction
-            'loss_pts_range': (-80, -40),  # Real stop-outs (lo, hi)
+        'Realistic Live (50% WR)': {
+            'win_rate_playbook': 0.70,
+            'win_rate_edge_fade': 0.45,
+            'playbook_winner_pts': playbook_winner_pts,
+            'edge_fade_winner_pts': edge_fade_winner_pts,
+            'all_winner_pts': all_winner_pts,
+            'winner_haircut': 0.80,
+            'edge_fade_loss_pts': edge_fade_loss_pts if edge_fade_loss_pts else [-50],
+            'playbook_loss_pts': [-80, -40],  # Real stop-outs for playbook
             'type_a_frac': type_a_frac,
             'avg_stop_a': avg_stop_a,
             'avg_stop_b': avg_stop_b,
+            'edge_fade_frac': edge_fade_frac,
         },
-        'Stress Test (60% WR)': {
-            'win_rate': 0.60,
-            'winner_pts': winner_pts,
-            'winner_haircut': 0.65,  # 35% reduction
-            'loss_pts_range': (-110, -60),  # Full stop-outs (lo, hi)
+        'Stress Test (42% WR)': {
+            'win_rate_playbook': 0.60,
+            'win_rate_edge_fade': 0.38,
+            'playbook_winner_pts': playbook_winner_pts,
+            'edge_fade_winner_pts': edge_fade_winner_pts,
+            'all_winner_pts': all_winner_pts,
+            'winner_haircut': 0.65,
+            'edge_fade_loss_pts': edge_fade_loss_pts if edge_fade_loss_pts else [-50],
+            'playbook_loss_pts': [-110, -60],  # Full stop-outs
             'type_a_frac': type_a_frac,
             'avg_stop_a': avg_stop_a,
             'avg_stop_b': avg_stop_b,
+            'edge_fade_frac': edge_fade_frac,
         },
     }
     return scenarios
@@ -162,18 +207,42 @@ def sample_trade(scenario, rng):
     """
     Sample a single trade from a scenario.
 
+    v14 model: first determine if trade is Edge Fade or Playbook,
+    then apply source-specific WR and P&L distributions.
+
     Returns (points_per_contract, grade, stop_distance_pts)
     """
+    # Determine if Edge Fade or Playbook trade
+    is_edge_fade = rng.random() < scenario['edge_fade_frac']
+
     # Determine setup grade
-    grade = 'A' if rng.random() < scenario['type_a_frac'] else 'B'
-    stop_dist = scenario['avg_stop_a'] if grade == 'A' else scenario['avg_stop_b']
+    if is_edge_fade:
+        grade = 'B'  # Edge Fade is always Type B
+        stop_dist = scenario['avg_stop_b']
+        win_rate = scenario['win_rate_edge_fade']
+    else:
+        grade = 'A' if rng.random() < scenario['type_a_frac'] / (1 - scenario['edge_fade_frac'] + 1e-9) else 'B'
+        stop_dist = scenario['avg_stop_a'] if grade == 'A' else scenario['avg_stop_b']
+        win_rate = scenario['win_rate_playbook']
 
     # Win or lose
-    if rng.random() < scenario['win_rate']:
-        pts = rng.choice(scenario['winner_pts']) * scenario['winner_haircut']
+    if rng.random() < win_rate:
+        if is_edge_fade and scenario['edge_fade_winner_pts']:
+            pts = rng.choice(scenario['edge_fade_winner_pts']) * scenario['winner_haircut']
+        elif not is_edge_fade and scenario['playbook_winner_pts']:
+            pts = rng.choice(scenario['playbook_winner_pts']) * scenario['winner_haircut']
+        else:
+            pts = rng.choice(scenario['all_winner_pts']) * scenario['winner_haircut']
     else:
-        lo, hi = scenario['loss_pts_range']
-        pts = rng.uniform(lo, hi)
+        if is_edge_fade:
+            pts = rng.choice(scenario['edge_fade_loss_pts'])
+        else:
+            loss_pts = scenario['playbook_loss_pts']
+            if isinstance(loss_pts, list) and len(loss_pts) == 2 and all(isinstance(v, (int, float)) for v in loss_pts):
+                # Range format [-hi, -lo]
+                pts = rng.uniform(loss_pts[0], loss_pts[1])
+            else:
+                pts = rng.choice(loss_pts) if loss_pts else -50.0
 
     return pts, grade, stop_dist
 
@@ -181,6 +250,29 @@ def sample_trade(scenario, rng):
 # ============================================================================
 #  PIPELINE SIMULATION
 # ============================================================================
+
+def _execute_sim_trade(pipeline, scenario, rng):
+    """Execute a single simulated trade through the pipeline."""
+    pts, grade, stop_dist = sample_trade(scenario, rng)
+
+    # Map grade to strategy/setup for the pipeline
+    if grade == 'A':
+        strategy_name = 'B-Day'
+        setup_type = 'B_DAY_IBL_FADE'
+        confidence = 'high'
+    else:
+        strategy_name = 'Edge Fade'
+        setup_type = 'EDGE_TO_MID'
+        confidence = 'medium'
+
+    pipeline.on_signal(
+        strategy_name=strategy_name,
+        setup_type=setup_type,
+        confidence=confidence,
+        stop_distance_pts=stop_dist,
+        trade_points=pts,
+    )
+
 
 def run_pipeline_sim(scenario, mode, n_sims=rules.MONTE_CARLO_RUNS,
                      sim_days=rules.SIM_DURATION_DAYS, seed=42,
@@ -215,27 +307,14 @@ def run_pipeline_sim(scenario, mode, n_sims=rules.MONTE_CARLO_RUNS,
         pipeline.start_new_eval(day=0)
 
         for day in range(1, sim_days + 1):
-            # Roll for trade occurrence (19.4% per session)
+            # Roll for trade occurrence (61.3% per session in v14)
             if rng.random() < rules.TRADE_FREQUENCY:
-                pts, grade, stop_dist = sample_trade(scenario, rng)
+                # First trade of the day
+                _execute_sim_trade(pipeline, scenario, rng)
 
-                # Map grade to strategy/setup for the pipeline
-                if grade == 'A':
-                    strategy_name = 'B-Day'
-                    setup_type = 'B_DAY_IBL_FADE'
-                    confidence = 'high'
-                else:
-                    strategy_name = 'Trend Day Bull'
-                    setup_type = 'VWAP_PULLBACK'
-                    confidence = 'medium'
-
-                pipeline.on_signal(
-                    strategy_name=strategy_name,
-                    setup_type=setup_type,
-                    confidence=confidence,
-                    stop_distance_pts=stop_dist,
-                    trade_points=pts,
-                )
+                # Roll for second trade (Edge Fade cooldown allows ~10% multi-trade days)
+                if rng.random() < rules.MULTI_TRADE_PROBABILITY:
+                    _execute_sim_trade(pipeline, scenario, rng)
 
             # End of day
             pipeline.process_eod(day)
@@ -502,7 +581,7 @@ def _print_cross_scenario_comparison(all_results):
 
     # Monthly income at realistic
     print("\n  MONTHLY INCOME ESTIMATE (Realistic Live, if eval passes):")
-    realistic = all_results.get('Realistic Live (70% WR)')
+    realistic = all_results.get('Realistic Live (50% WR)')
     if realistic:
         for mode_name, label in [('rotation', 'Rotation'), ('copy_trade', 'Copy Trade')]:
             f = realistic[mode_name]['final']
@@ -511,12 +590,13 @@ def _print_cross_scenario_comparison(all_results):
             print(f"    {label}: ${monthly:,.0f}/month (${annual:,.0f} over 2 years)")
 
     # Recommendation
-    print(f"\n  RECOMMENDATION:")
-    print(f"  1. Execute at 75%+ WR live (between backtest-exact and realistic)")
-    print(f"  2. Start with Copy Trade for faster payout accumulation")
-    print(f"  3. Budget 5 evals + 10 resets = $3,285 max eval cost")
-    print(f"  4. Target: pass 1st eval in 2-4 months, then 1 more every 2-3 months")
-    print(f"  5. After 6 payout cycles on funded account, transition to live trading")
+    print(f"\n  RECOMMENDATION (v14 Edge Fade + Playbook):")
+    print(f"  1. v14 trades at ~14/month (3.2x more than v13's 4/month)")
+    print(f"  2. Blended WR ~58% backtest; target 50%+ live for positive expectancy")
+    print(f"  3. Edge Fade fills 76% of sessions that Playbook misses (b_day/neutral)")
+    print(f"  4. Start with Copy Trade for faster payout accumulation")
+    print(f"  5. Budget 5 evals + 10 resets = $3,285 max eval cost")
+    print(f"  6. Higher trade freq = faster eval pass but also faster DD accumulation")
 
 
 # ============================================================================
@@ -524,14 +604,20 @@ def _print_cross_scenario_comparison(all_results):
 # ============================================================================
 
 def main():
-    print("Loading trade data from v13 backtest...")
+    print("Loading trade data from v14 backtest (Edge Fade + Playbook)...")
     session_trades = load_trade_data()
     trade_pool = build_trade_pool(session_trades)
 
     # Print trade pool summary
     type_a = [t for t in trade_pool if t['grade'] == 'A']
     type_b = [t for t in trade_pool if t['grade'] == 'B']
-    print(f"\nTrade pool: {len(trade_pool)} unique session trades")
+    playbook = [t for t in trade_pool if t['source'] == 'playbook']
+    edge_fade = [t for t in trade_pool if t['source'] == 'edge_fade']
+    print(f"\nTrade pool: {len(trade_pool)} deduplicated trades")
+    print(f"  Playbook (Trend/P-Day/B-Day): {len(playbook)} trades, "
+          f"WR={sum(1 for t in playbook if t['is_winner'])/len(playbook)*100:.0f}%")
+    print(f"  Edge Fade (EDGE_TO_MID):      {len(edge_fade)} trades, "
+          f"WR={sum(1 for t in edge_fade if t['is_winner'])/len(edge_fade)*100:.0f}%")
     print(f"  Type A (high conviction): {len(type_a)} trades "
           f"({len(type_a)/len(trade_pool)*100:.0f}%)")
     for t in type_a:
@@ -539,20 +625,23 @@ def main():
               f"{t['points']:+.1f} pts, stop={t['stop_distance_pts']:.0f} pts")
     print(f"  Type B (standard): {len(type_b)} trades "
           f"({len(type_b)/len(trade_pool)*100:.0f}%)")
-    print(f"\nTrade frequency: {rules.TRADE_FREQUENCY:.1%} "
-          f"({rules.TRADE_FREQUENCY * rules.TRADING_DAYS_PER_MONTH:.1f} trades/month)")
+    eff_trades_per_month = (rules.TRADE_FREQUENCY * (1 + rules.MULTI_TRADE_PROBABILITY)
+                            * rules.TRADING_DAYS_PER_MONTH)
+    print(f"\nTrade frequency: {rules.TRADE_FREQUENCY:.1%} sessions/day "
+          f"(+{rules.MULTI_TRADE_PROBABILITY:.0%} multi-trade)")
+    print(f"Effective: ~{eff_trades_per_month:.0f} trades/month")
 
     # Build scenarios
     scenarios = build_scenarios(trade_pool)
 
     # ================================================================
-    #  PART 1: Sizing scheme comparison at Realistic 70% WR
+    #  PART 1: Sizing scheme comparison at Realistic 50% WR
     # ================================================================
     print("\n" + "=" * 120)
-    print("  PART 1: EVAL SIZING SCHEME COMPARISON (Realistic Live 70% WR, Copy Trade)")
+    print("  PART 1: EVAL SIZING SCHEME COMPARISON (Realistic Live 50% WR, Copy Trade)")
     print("=" * 120)
 
-    realistic = scenarios['Realistic Live (70% WR)']
+    realistic = scenarios['Realistic Live (50% WR)']
     sizing_results = {}
 
     for scheme_name, scheme in rules.EVAL_SIZING_SCHEMES.items():
@@ -568,7 +657,7 @@ def main():
 
     # Print sizing comparison
     print(f"\n{'='*120}")
-    print(f"  EVAL SIZING COMPARISON (Realistic 70% WR, Copy Trade, 2 years)")
+    print(f"  EVAL SIZING COMPARISON (Realistic 50% WR, Copy Trade, 2 years)")
     print(f"{'='*120}")
     print(f"\n  {'Scheme':<32s} {'Pass%':>6s} {'Mean$':>8s} {'Funded':>7s} {'Reset%':>7s} "
           f"{'EvCost':>8s} {'Payout':>9s} {'Net$':>9s} {'Cond$':>9s} {'Profit%':>8s}")
