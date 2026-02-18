@@ -10,6 +10,12 @@ from strategy.neutral_day import NeutralDayStrategy
 from strategy.pm_morph import PMMorphStrategy
 from strategy.morph_to_trend import MorphToTrendStrategy
 
+# New research-based strategies (Feb 2026 evaluation research)
+from strategy.orb_vwap_breakout import ORBVwapBreakout
+from strategy.liquidity_sweep import LiquiditySweep
+from strategy.mean_reversion_vwap import MeanReversionVWAP
+from strategy.ema_trend_follow import EMATrendFollow
+
 ALL_STRATEGIES = [
     TrendDayBull,
     TrendDayBear,
@@ -20,6 +26,11 @@ ALL_STRATEGIES = [
     NeutralDayStrategy,
     PMMorphStrategy,
     MorphToTrendStrategy,
+    # Research-based strategies
+    ORBVwapBreakout,
+    LiquiditySweep,
+    MeanReversionVWAP,
+    EMATrendFollow,
 ]
 
 # Core strategies with demonstrated positive edge
@@ -32,6 +43,15 @@ CORE_STRATEGIES = [
     BDayStrategy,
 ]
 
+# Research-based strategies for evaluation passing (Feb 2026)
+# These complement the core Dalton strategies with community-validated approaches
+RESEARCH_STRATEGIES = [
+    ORBVwapBreakout,
+    LiquiditySweep,
+    MeanReversionVWAP,
+    EMATrendFollow,
+]
+
 
 def get_all_strategies():
     """Instantiate all 9 Dalton playbook strategies."""
@@ -41,6 +61,11 @@ def get_all_strategies():
 def get_core_strategies():
     """Instantiate only strategies with demonstrated positive edge."""
     return [cls() for cls in CORE_STRATEGIES]
+
+
+def get_research_strategies():
+    """Instantiate research-based evaluation strategies."""
+    return [cls() for cls in RESEARCH_STRATEGIES]
 
 
 def get_strategies_by_name(*names):
