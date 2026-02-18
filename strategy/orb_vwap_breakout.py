@@ -40,7 +40,7 @@ from strategy.signal import Signal
 MIN_VOLUME_SPIKE = 1.3          # Breakout bar volume must be >= 1.3x average
 MIN_CANDLE_STRENGTH = 0.55      # Close must be in upper 55% of bar range (longs)
 MIN_DELTA_THRESHOLD = 0         # Delta must be positive for longs (negative shorts)
-STOP_BUFFER_MULT = 0.25         # Buffer beyond IB boundary for stop
+STOP_BUFFER_MULT = 0.50         # Stop at IB midpoint (not IBL — too wide)
 TARGET_MULT = 1.5               # Target = 1.5x IB range from entry
 TRAIL_TRIGGER_MULT = 1.0        # Trail to breakeven after 1.0x IB move
 BREAKOUT_COOLDOWN_BARS = 5      # Min bars between entries
@@ -111,9 +111,12 @@ class ORBVwapBreakout(StrategyBase):
         # --- LONG BREAKOUT: Close above IBH ---
         if not self._breakout_up and current_price > self._ib_high:
             if self._validate_breakout_long(bar, current_price, bar_range, delta, volume_spike, vwap):
-                stop_price = self._ib_low + (self._ib_range * STOP_BUFFER_MULT)
+                # Stop at IB midpoint — tighter than IBL for better position sizing
+                stop_price = self._ib_mid
                 # Ensure minimum stop distance
                 stop_price = min(stop_price, current_price - 15.0)
+                # But not higher than IBH (that would be absurd)
+                stop_price = min(stop_price, self._ib_high - 5.0)
                 target_price = current_price + (TARGET_MULT * self._ib_range)
 
                 self._breakout_up = True
@@ -139,35 +142,10 @@ class ORBVwapBreakout(StrategyBase):
                 )
 
         # --- SHORT BREAKOUT: Close below IBL ---
-        # NOTE: Shorts on NQ have lower win rate (~25% in existing backtest data).
-        # Included for completeness but may want to disable for NQ-only trading.
-        if not self._breakout_down and current_price < self._ib_low:
-            if self._validate_breakout_short(bar, current_price, bar_range, delta, volume_spike, vwap):
-                stop_price = self._ib_high - (self._ib_range * STOP_BUFFER_MULT)
-                stop_price = max(stop_price, current_price + 15.0)
-                target_price = current_price - (TARGET_MULT * self._ib_range)
-
-                self._breakout_down = True
-                self._entry_count += 1
-                self._last_entry_bar = bar_index
-
-                return Signal(
-                    timestamp=bar.get('timestamp', bar.name) if hasattr(bar, 'name') else bar.get('timestamp'),
-                    direction='SHORT',
-                    entry_price=current_price,
-                    stop_price=stop_price,
-                    target_price=target_price,
-                    strategy_name=self.name,
-                    setup_type='ORB_BREAKOUT_SHORT',
-                    day_type=session_context.get('day_type', ''),
-                    trend_strength=session_context.get('trend_strength', 'moderate'),
-                    confidence='high' if volume_spike >= 2.0 else 'medium',
-                    metadata={
-                        'volume_spike': volume_spike,
-                        'delta': delta,
-                        'ib_range': self._ib_range,
-                    },
-                )
+        # DISABLED: NQ shorts showed 30% WR on ORB shorts in backtest.
+        # NQ has strong long bias — short breakdowns consistently fail.
+        # if not self._breakout_down and current_price < self._ib_low:
+        #     ...disabled...
 
         return None
 

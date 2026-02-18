@@ -124,11 +124,14 @@ class EMATrendFollow(StrategyBase):
             )
 
         # --- SHORT SETUP: EMA20 < EMA50 (downtrend) ---
-        if ema20 < ema50:
-            return self._check_short_pullback(
-                bar, bar_index, session_context,
-                current_price, ema20, ema50, vwap, delta, volume_spike,
-            )
+        # DISABLED: NQ has strong long bias — short EMA pullbacks showed 17.4% WR
+        # in backtest across 62 sessions. Consistent with existing codebase findings
+        # that short strategies on NQ consistently underperform (25% WR).
+        # if ema20 < ema50:
+        #     return self._check_short_pullback(
+        #         bar, bar_index, session_context,
+        #         current_price, ema20, ema50, vwap, delta, volume_spike,
+        #     )
 
         return None
 

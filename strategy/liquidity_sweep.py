@@ -79,9 +79,9 @@ class LiquiditySweep(StrategyBase):
         self._ib_mid = (ib_high + ib_low) / 2
 
         # Prior day levels (key liquidity zones)
-        prior = session_context.get('prior_day', {})
-        self._pdh = prior.get('high', None)
-        self._pdl = prior.get('low', None)
+        # Engine stores these as prior_session_high / prior_session_low
+        self._pdh = session_context.get('prior_session_high', None)
+        self._pdl = session_context.get('prior_session_low', None)
 
         # Tracking
         self._ibh_swept = False

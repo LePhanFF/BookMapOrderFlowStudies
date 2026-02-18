@@ -142,11 +142,13 @@ class MeanReversionVWAP(StrategyBase):
             )
 
         # --- SHORT: Price above VWAP, overbought, expecting mean reversion down ---
-        if deviation > 0 and rsi > RSI_OVERBOUGHT:
-            return self._check_short_reversion(
-                bar, bar_index, session_context,
-                current_price, vwap, deviation_mult, delta, volume_spike,
-            )
+        # DISABLED: NQ shorts on mean reversion showed 37.5% WR, -$147/trade.
+        # NQ long bias makes shorting mean reversion unreliable.
+        # if deviation > 0 and rsi > RSI_OVERBOUGHT:
+        #     return self._check_short_reversion(
+        #         bar, bar_index, session_context,
+        #         current_price, vwap, deviation_mult, delta, volume_spike,
+        #     )
 
         return None
 
