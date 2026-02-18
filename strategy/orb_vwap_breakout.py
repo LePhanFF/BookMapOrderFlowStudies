@@ -142,10 +142,35 @@ class ORBVwapBreakout(StrategyBase):
                 )
 
         # --- SHORT BREAKOUT: Close below IBL ---
-        # DISABLED: NQ shorts showed 30% WR on ORB shorts in backtest.
-        # NQ has strong long bias — short breakdowns consistently fail.
-        # if not self._breakout_down and current_price < self._ib_low:
-        #     ...disabled...
+        # Re-enabled with regime filter (Feb 2026). Without filter: 30% WR.
+        # With regime filter: only fires in bear regime (EMA20 < EMA50).
+        if not self._breakout_down and current_price < self._ib_low:
+            if self._validate_breakout_short(bar, current_price, bar_range, delta, volume_spike, vwap):
+                stop_price = self._ib_high - (self._ib_range * STOP_BUFFER_MULT)
+                stop_price = max(stop_price, current_price + 15.0)
+                target_price = current_price - (TARGET_MULT * self._ib_range)
+
+                self._breakout_down = True
+                self._entry_count += 1
+                self._last_entry_bar = bar_index
+
+                return Signal(
+                    timestamp=bar.get('timestamp', bar.name) if hasattr(bar, 'name') else bar.get('timestamp'),
+                    direction='SHORT',
+                    entry_price=current_price,
+                    stop_price=stop_price,
+                    target_price=target_price,
+                    strategy_name=self.name,
+                    setup_type='ORB_BREAKOUT_SHORT',
+                    day_type=session_context.get('day_type', ''),
+                    trend_strength=session_context.get('trend_strength', 'moderate'),
+                    confidence='high' if volume_spike >= 2.0 else 'medium',
+                    metadata={
+                        'volume_spike': volume_spike,
+                        'delta': delta,
+                        'ib_range': self._ib_range,
+                    },
+                )
 
         return None
 

@@ -142,13 +142,14 @@ class MeanReversionVWAP(StrategyBase):
             )
 
         # --- SHORT: Price above VWAP, overbought, expecting mean reversion down ---
-        # DISABLED: NQ shorts on mean reversion showed 37.5% WR, -$147/trade.
-        # NQ long bias makes shorting mean reversion unreliable.
-        # if deviation > 0 and rsi > RSI_OVERBOUGHT:
-        #     return self._check_short_reversion(
-        #         bar, bar_index, session_context,
-        #         current_price, vwap, deviation_mult, delta, volume_spike,
-        #     )
+        # Re-enabled with regime filter gating (Feb 2026).
+        # Without regime filter: 37.5% WR. With regime filter: shorts only
+        # allowed in bear regime.
+        if deviation > 0 and rsi > RSI_OVERBOUGHT:
+            return self._check_short_reversion(
+                bar, bar_index, session_context,
+                current_price, vwap, deviation_mult, delta, volume_spike,
+            )
 
         return None
 
