@@ -346,6 +346,10 @@ class BacktestEngine:
         trend_strategies = ('Trend Day Bull', 'Trend Day Bear',
                            'Super Trend Bull', 'Super Trend Bear',
                            'Morph to Trend')
+        # Edge Fade trades are mean reversion from IB edge to midpoint.
+        # They naturally oscillate near VWAP, so VWAP breach PM exit would
+        # prematurely kill valid trades. Their stop/target handles risk.
+        vwap_breach_exempt = trend_strategies + ('Edge Fade',)
 
         for pos in self.position_mgr.open_positions:
             pos.bars_held += 1
@@ -369,7 +373,7 @@ class BacktestEngine:
                 # VWAP breach in PM = trend failure
                 # Only apply to non-trend strategies (PM Morph, P-Day, B-Day).
                 # Trend day entries with acceptance hold through PM; their stop handles exits.
-                if pos.strategy_name not in trend_strategies:
+                if pos.strategy_name not in vwap_breach_exempt:
                     if 'vwap' in bar.index:
                         vwap = bar['vwap']
                         if pos.direction == 'LONG' and bar['close'] < vwap - VWAP_BREACH_POINTS:
