@@ -226,23 +226,39 @@ Note: Opening Range Reversal (Strategy 7) operates before IB is formed (9:30-10:
 
 ---
 
-## 5. Session Coverage
+## 5. Full Strategy Performance Table
 
-| Day Type | Sessions | Intraday Strategies | OR Strategy | Combined Coverage |
-|----------|----------|---------------------|-------------|-------------------|
-| trend_up | 4 | Trend Bull, P-Day | OR Reversal | Higher |
-| p_day | 13 | P-Day | OR Reversal | Higher |
-| b_day | 16 | B-Day Fade, Edge Fade, IBH Sweep | OR Reversal | Higher |
-| b_day_bear | 5 | Bear Accept Short | OR Reversal | Higher |
-| neutral | 18 | Edge Fade | OR Reversal | Higher |
-| trend_down | 6 | Bear Accept Short | OR Reversal | Higher |
-| **TOTAL** | **62** | **32/62 (52%)** | **16/62 (26%)** | **~42/62 (68%)** |
+| # | Strategy | Dir | Trades | WR | Net P&L | Expectancy | Max DD | PF |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Trend Day Bull | LONG | 8 | 75% | $1,074 | $134/trade | -$3 | 197 |
+| 2 | P-Day | LONG | 8 | 75% | $1,075 | $134/trade | -$3 | 197 |
+| 3 | B-Day IBL Fade | LONG | 4 | 100% | $2,285 | $571/trade | $0 | INF |
+| 4 | Edge Fade (optimized) | LONG | 17 | 94% | $7,696 | $453/trade | -$351 | 23 |
+| 5 | IBH Sweep+Fail | SHORT | 4 | 100% | $582 | $146/trade | $0 | INF |
+| 6 | Bear Accept Short | SHORT | 11 | 64% | $995 | $90/trade | -$289 | 3.3 |
+| | **Intraday Subtotal** | | **52** | **83%** | **$13,706** | **$264/trade** | **-$351** | **18.35** |
+| 7 | OR Reversal | BOTH | 20 | 80% | $3,807 | $190/trade | -$407 | 6.3 |
+| | **COMBINED TOTAL** | | **72** | **~82%** | **~$17,513** | **~$243/trade** | **-$407** | **~12** |
 
-Note: OR Reversal adds 16 sessions with trades (some overlap with intraday sessions).
+*62 RTH sessions, Nov 18 2025 - Feb 16 2026, 1 MNQ ($2/pt). Annualized: ~$71,200/year.*
+
+## 6. Session Coverage
+
+| Day Type | Sessions | Intraday Strategies | OR Strategy |
+|----------|----------|---------------------|-------------|
+| trend_up | 4 | Trend Bull, P-Day | OR Reversal |
+| p_day | 13 | P-Day | OR Reversal |
+| b_day | 16 | B-Day Fade, Edge Fade, IBH Sweep | OR Reversal |
+| b_day_bear | 5 | Bear Accept Short | OR Reversal |
+| neutral | 18 | Edge Fade | OR Reversal |
+| trend_down | 6 | Bear Accept Short | OR Reversal |
+| **TOTAL** | **62** | **32/62 (52%)** | **16/62 (26%)** |
+
+Combined coverage: ~42/62 sessions (68%). OR Reversal adds 16 sessions with trades (some overlap with intraday).
 
 ---
 
-## 6. Key Findings
+## 7. Key Findings
 
 ### What Works
 1. Day type classification is THE primary filter
@@ -265,7 +281,7 @@ Note: OR Reversal adds 16 sessions with trades (some overlap with intraday sessi
 
 ---
 
-## 7. Evaluation Strategy (Tradeify $150K Select Flex)
+## 8. Evaluation Strategy (Tradeify $150K Select Flex)
 
 - **Profit Target**: $9,000
 - **Trailing Drawdown**: $4,500 (EOD)
@@ -276,7 +292,7 @@ Note: OR Reversal adds 16 sessions with trades (some overlap with intraday sessi
 
 ---
 
-## 8. How to Run
+## 9. How to Run
 
 ```bash
 # All strategies (core playbook)
@@ -307,7 +323,7 @@ python diagnostic_opening_range_v2.py       # OR v2 optimized (20 trades)
 
 ---
 
-## 9. Version History
+## 10. Version History
 
 | Version | Date | Key Change |
 |---------|------|-----------|
