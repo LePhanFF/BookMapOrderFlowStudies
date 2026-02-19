@@ -112,7 +112,7 @@ Note: Opening Range Reversal (Strategy 7) operates before IB is formed (9:30-10:
 - FVG present = 56% WR vs 29% without
 - VWAP_RECLAIM models have ZERO edge and are excluded
 
-**Automation**: Partially automatable. Core logic works in NinjaTrader. SMT requires multi-instrument data via `AddDataSeries()`.
+**Automation**: Fully automatable. Core logic works in NinjaTrader or via Python Signal API. SMT uses multi-instrument data via `AddDataSeries("ES")` and `AddDataSeries("YM")`.
 
 ### Intraday Strategies (10:30-16:00)
 
@@ -323,14 +323,68 @@ python diagnostic_opening_range_v2.py       # OR v2 optimized (20 trades)
 
 ---
 
-## 10. Version History
+## 10. Automation Architecture
+
+**All 7 strategies are fully automatable.** See `AUTOMATION_ARCHITECTURE.md` for complete spec.
+
+### Hybrid Architecture: NinjaTrader + Python Signal API
+
+```
+NinjaTrader 8 (Execution)  ─── HTTPS POST /signal ──→  Python API (GCP Cloud Run)
+  - Market data (MNQ+ES+YM)                              - All 7 strategies
+  - Order execution                                       - Day type classification
+  - Position management      ←── JSON signal ────────    - OF quality gate
+  - Stop/target management                                - IB/VWAP computation
+```
+
+**How it works**:
+1. NinjaTrader sends 1-min bar data (OHLCV + delta + cross-instruments) to Python API
+2. Python evaluates all 7 strategies against session state (IB, VWAP, day type, acceptance)
+3. Returns trade signal: `{action: "ENTER_LONG", stop, target, model, confidence}`
+4. NinjaTrader executes: `EnterLong()`, `SetStopLoss()`, `SetProfitTarget()`
+
+**Key advantages**:
+- Single codebase for backtesting AND live trading (no C# translation bugs)
+- Faster iteration: change strategy in Python, deploy in 30 sec, no NT restart
+- Full Python ecosystem: pandas, numpy, scipy
+- Git-tracked strategies vs NinjaScript project files
+
+**Latency**: 50-200ms round trip, fine for 1-min bars (60,000ms budget).
+**Fail-safe**: API error = no signal = no trade (never trades on stale data).
+**Cost**: ~$30-50/month GCP Cloud Run with min-instances=1 during market hours.
+
+### OR V3 Session Coverage (from diagnostic_opening_range_v3.py)
+
+| Model | Trades | Sessions | WR | Expectancy | Net P&L |
+|-------|--------|----------|-----|-----------|---------|
+| OR Reversal V2 (fixed) | 59 | 46/62 | 56% | $100/trade | $5,875 |
+| OR Breakout | 10 | 8/62 | 40% | $30/trade | $300 |
+| Silver Bullet (10:00-11:00) | 36 | 25/62 | 50% | $14/trade | $504 |
+| **Combined best-per-session** | **55** | **55/62 (89%)** | **69%** | **$161/trade** | **$8,882** |
+| OR V1 optimized (current) | 20 | 16/62 | 80% | $190/trade | $3,807 |
+
+**Tradeoff**: V1 optimized = fewer trades but higher quality ($190/trade). V3 combined = more sessions but lower per-trade expectancy ($161/trade). Choose based on eval speed vs quality preference.
+
+---
+
+## 11. Version History
 
 | Version | Date | Key Change |
 |---------|------|-----------|
 | v1.0 | Feb 2026 | Dual strategy (44% WR, $94/trade) |
 | v2.0 | Feb 16 | Dalton playbook (84% WR, $261/trade, 20 trades) |
 | v3.0 | Feb 18 | 6-strategy portfolio (83% WR, $264/trade, 52 trades) |
-| **v4.0** | **Feb 19** | **7-strategy portfolio: +Opening Range Reversal (~82% WR, ~$243/trade, 72 trades)** |
+| v4.0 | Feb 19 | 7-strategy portfolio: +Opening Range Reversal (~82% WR, ~$243/trade, 72 trades) |
+| **v4.1** | **Feb 19** | **Automation architecture: NinjaTrader + Python Signal API (GCP Cloud Run). OR V3 coverage gap analysis (89% session coverage). All strategies confirmed fully automatable.** |
+
+Key v4.1 additions:
+- Hybrid NinjaTrader → Python Signal API architecture (AUTOMATION_ARCHITECTURE.md)
+- Full FastAPI spec with endpoints: /signal, /session_init, /health, /state
+- NinjaScript C# client template with AddDataSeries for ES/YM
+- GCP Cloud Run deployment config (Dockerfile, ~$30-50/month)
+- OR V3 gap analysis: fixed 3 bugs in V1 detection (London H/L, level priority, threshold)
+- OR V3 combined models reach 55/62 sessions (89% coverage), $8,882 net
+- All 7 strategies confirmed FULLY automatable (removed "partially" labels)
 
 Key v4.0 additions:
 - Opening Range Reversal strategy (ICT Judas Swing): 20 trades, 80% WR, $190/trade
