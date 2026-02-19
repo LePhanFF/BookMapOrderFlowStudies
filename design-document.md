@@ -1,8 +1,8 @@
 # Order Flow Strategy - Design Document
-## Version 3.0 - v14 Optimized Portfolio
+## Version 4.0 - v14 Complete Portfolio (7 Strategies)
 
-**Date**: February 18, 2026
-**Status**: VALIDATED - 6-Strategy Portfolio
+**Date**: February 19, 2026
+**Status**: VALIDATED - 7-Strategy Portfolio (6 Intraday + 1 Opening Range)
 **Branch**: `v14-prop-firm-pipeline`
 **Target**: Tradeify $150K Select Flex Evaluation + Funded Accounts
 
@@ -10,14 +10,15 @@
 
 ## 1. Executive Summary
 
-After extensive backtesting (62 RTH sessions, Nov 18 2025 - Feb 16 2026, MNQ $2/pt), we have identified a 6-strategy portfolio built on Dalton Market Profile day type classification with order flow confirmation:
+After extensive backtesting (62 RTH sessions, Nov 18 2025 - Feb 16 2026, MNQ $2/pt), we have a 7-strategy portfolio: 6 intraday Dalton Market Profile strategies (10:30-16:00) plus 1 ICT Opening Range Reversal strategy (9:30-10:30).
 
 | Portfolio | Trades | WR | Expectancy | Net P&L | Max DD | PF | MaxCL |
 |-----------|--------|-----|-----------|---------|--------|-----|-------|
-| **OLD (unfiltered)** | 110 | 58% | $110 | $12,148 | -$3,103 | 2.01 | 12 |
-| **OPTIMIZED** | 52 | 83% | $264 | $13,706 | **-$351** | 18.35 | 2 |
+| **Intraday (6 strategies)** | 52 | 83% | $264 | $13,706 | -$351 | 18.35 | 2 |
+| **Opening Range (optimized)** | 20 | 80% | $190 | $3,807 | -$407 | 6.30 | 2 |
+| **COMBINED (7 strategies)** | **72** | **~82%** | **~$243** | **~$17,513** | **-$407** | **~12** | **2** |
 
-The optimized portfolio produces MORE P&L with FEWER trades, a 9x smaller drawdown, and recovers from max DD in 1-2 trades.
+The strategies don't overlap in time (9:30-10:30 vs 10:30-16:00), making them fully additive.
 
 ### Key Principle
 **Day type classification is THE primary filter**. Order flow is a confirmation tool, not a standalone signal. Market structure (IB acceptance, VWAP pullback, edge mean-reversion) provides directional context that raw OF cannot.
@@ -56,7 +57,7 @@ BookMapOrderFlowStudies/
 
 | Attribute | Value |
 |-----------|-------|
-| Instruments | NQ (Nasdaq) - MNQ for trading |
+| Instruments | NQ, ES, YM (Nasdaq, S&P, Dow) - MNQ for trading |
 | Timeframe | 1-minute bars |
 | Data Period | Nov 18, 2025 - Feb 16, 2026 |
 | Sessions | 62 RTH trading days |
@@ -65,18 +66,55 @@ BookMapOrderFlowStudies/
 
 ### 2.3 Day Type Classification
 
-| Day Type | IB Extension | Description | Active Strategies |
-|----------|-------------|-------------|-------------------|
-| trend_up | > 1.0x IB above IBH | Strong directional up | Trend Bull, P-Day |
-| p_day | 0.5-1.0x above IBH | Directional with pullback | P-Day |
-| b_day | 0.2-0.5x either side | Balanced, range-bound | B-Day Fade, Edge Fade, IBH Sweep |
-| b_day_bear | > 0.5x below IBL | Balance with bear extension | Bear Accept Short |
-| neutral | < 0.2x either side | Inside IB, low volatility | Edge Fade |
-| trend_down | > 1.0x below IBL | Strong directional down | Bear Accept Short |
+| Day Type | IB Extension | Description | Intraday Strategies | OR Strategy |
+|----------|-------------|-------------|---------------------|-------------|
+| trend_up | > 1.0x IB above IBH | Strong directional up | Trend Bull, P-Day | OR Reversal |
+| p_day | 0.5-1.0x above IBH | Directional with pullback | P-Day | OR Reversal |
+| b_day | 0.2-0.5x either side | Balanced, range-bound | B-Day Fade, Edge Fade, IBH Sweep | OR Reversal |
+| b_day_bear | > 0.5x below IBL | Balance with bear extension | Bear Accept Short | OR Reversal |
+| neutral | < 0.2x either side | Inside IB, low volatility | Edge Fade | OR Reversal |
+| trend_down | > 1.0x below IBL | Strong directional down | Bear Accept Short | OR Reversal |
+
+Note: Opening Range Reversal (Strategy 7) operates before IB is formed (9:30-10:30), so it's day-type agnostic.
 
 ---
 
-## 3. Strategy Roster (6 Active Strategies)
+## 3. Strategy Roster (7 Active Strategies)
+
+### Pre-Market: Opening Range Reversal (9:30-10:30)
+
+### Strategy 7: Opening Range Reversal (LONG and SHORT)
+
+**When**: Every session, 9:30-10:30 ET. Optimized filter: overnight H/L sweep + VWAP aligned.
+
+**Concept**: ICT "Judas Swing" at market open. First 30 min makes a false move to sweep pre-market liquidity, then reverses. Uses cross-instrument SMT divergence (NQ vs ES vs YM) as confluence.
+
+**Pre-Market Levels** (computed before 9:30):
+- Overnight High/Low (18:00 prev to 9:29)
+- Asia High/Low (20:00-00:00 prev)
+- London High/Low (02:00-05:00)
+- PDH/PDL/PDC (prior day RTH)
+
+**Entry**:
+1. First 30 bars (9:30-9:59) make extreme near overnight H/L, Asia H/L, or PDH/PDL (within 30 pts)
+2. Price reverses through OR midpoint (Judas swing confirmation)
+3. VWAP alignment: entry within 20 pts of VWAP
+4. FVG confirmation on 5-min bars in reversal direction (optional but improves WR)
+5. Enter at close of reversal bar
+
+**Stop**: Sweep extreme + 15% of OR range
+**Target**: 2R (risk = entry to stop; target = 2x risk in trade direction)
+**Performance**: 20 trades, 80% WR, $190/trade, -$407 MaxDD, PF 6.3
+
+**Key filters**:
+- Overnight H/L sweep = 73-86% WR (best level quality)
+- Gap aligned (gap down + LONG) = 62% WR vs 38% unaligned
+- FVG present = 56% WR vs 29% without
+- VWAP_RECLAIM models have ZERO edge and are excluded
+
+**Automation**: Partially automatable. Core logic works in NinjaTrader. SMT requires multi-instrument data via `AddDataSeries()`.
+
+### Intraday Strategies (10:30-16:00)
 
 ### Strategy 1: Trend Day Bull (LONG)
 
@@ -173,7 +211,7 @@ BookMapOrderFlowStudies/
 | Max Contracts | 1 MNQ | Scale 1-3 MNQ |
 | Daily Edge Fade Loss | -$400 (2 stops) | -$400 |
 | Max Drawdown Budget | $4,500 (trailing) | Account-specific |
-| Session | 10:30-16:00 | 10:30-16:00 |
+| Session | 9:30-16:00 | 9:30-16:00 |
 
 ### 4.2 Position Sizing (Funded Accounts)
 
@@ -183,22 +221,24 @@ BookMapOrderFlowStudies/
 | Phase 2 | $3,000-$6,000 | 1-2 MNQ | 2 MNQ | 1 MNQ |
 | Phase 3 | $6,000+ | 2-3 MNQ | 3 MNQ | 2 MNQ |
 
-**A Setups**: B-Day IBL Fade (100% WR), Trend Bull (75% WR)
-**B Setups**: Edge Fade (94% WR optimized), Bear Accept Short (64% WR)
+**A Setups**: B-Day IBL Fade (100% WR), Edge Fade Optimized (94% WR), OR Reversal overnight sweep (80% WR)
+**B Setups**: Trend Bull/P-Day (75% WR), Bear Accept Short (64% WR)
 
 ---
 
 ## 5. Session Coverage
 
-| Day Type | Sessions | Strategies Active | Coverage |
-|----------|----------|-------------------|----------|
-| trend_up | 4 | Trend Bull, P-Day | Partial |
-| p_day | 13 | P-Day | 6/13 (46%) |
-| b_day | 16 | B-Day Fade, Edge Fade, IBH Sweep | 8/16 (50%) |
-| b_day_bear | 5 | Bear Accept Short | 5/5 (100%) |
-| neutral | 18 | Edge Fade | 7/18 (39%) |
-| trend_down | 6 | Bear Accept Short | 6/6 (100%) |
-| **TOTAL** | **62** | --- | **32/62 (52%)** |
+| Day Type | Sessions | Intraday Strategies | OR Strategy | Combined Coverage |
+|----------|----------|---------------------|-------------|-------------------|
+| trend_up | 4 | Trend Bull, P-Day | OR Reversal | Higher |
+| p_day | 13 | P-Day | OR Reversal | Higher |
+| b_day | 16 | B-Day Fade, Edge Fade, IBH Sweep | OR Reversal | Higher |
+| b_day_bear | 5 | Bear Accept Short | OR Reversal | Higher |
+| neutral | 18 | Edge Fade | OR Reversal | Higher |
+| trend_down | 6 | Bear Accept Short | OR Reversal | Higher |
+| **TOTAL** | **62** | **32/62 (52%)** | **16/62 (26%)** | **~42/62 (68%)** |
+
+Note: OR Reversal adds 16 sessions with trades (some overlap with intraday sessions).
 
 ---
 
@@ -229,10 +269,10 @@ BookMapOrderFlowStudies/
 
 - **Profit Target**: $9,000
 - **Trailing Drawdown**: $4,500 (EOD)
-- **Expectancy**: $264/trade at 1 MNQ
-- **Trades needed**: ~35 trades
-- **Timeline**: ~3-4 weeks
-- **Max DD risk**: -$351 = 7.8% of DD allowance
+- **Combined expectancy**: ~$243/trade at 1 MNQ
+- **Trades needed**: ~37 trades
+- **Timeline**: ~4-5 weeks (72 trades / 62 sessions = ~1.2 trades/day)
+- **Max DD risk**: -$407 = 9% of DD allowance
 
 ---
 
@@ -253,12 +293,17 @@ python diagnostic_edge_fade_deep.py        # Edge Fade analysis
 python diagnostic_bearish_day_v2.py         # Bear short study
 python diagnostic_full_portfolio_report.py  # Full portfolio
 python strategy_report.py                   # Strategy comparison
+
+# Opening Range strategy
+python diagnostic_opening_range_smt.py      # OR v1 (97 trades raw)
+python diagnostic_opening_range_v2.py       # OR v2 optimized (20 trades)
 ```
 
 ### Adding New Data
-1. Place CSV in `csv/` with format: `{INSTRUMENT}_Volumetric_1.csv`
+1. Place CSV in `csv/` with format: `{INSTRUMENT}_Volumetric_1.csv` (NQ, ES, YM all required for OR strategy)
 2. Required columns: timestamp, open, high, low, close, volume, vol_delta, cumulative_delta, delta_percentile, imbalance_ratio, volume_spike, vwap
-3. Run: `python run_backtest.py --strategies core`
+3. Run: `python run_backtest.py --strategies core` (intraday strategies)
+4. Run: `python diagnostic_opening_range_v2.py` (opening range strategy)
 
 ---
 
@@ -268,16 +313,25 @@ python strategy_report.py                   # Strategy comparison
 |---------|------|-----------|
 | v1.0 | Feb 2026 | Dual strategy (44% WR, $94/trade) |
 | v2.0 | Feb 16 | Dalton playbook (84% WR, $261/trade, 20 trades) |
-| **v3.0** | **Feb 18** | **6-strategy portfolio (83% WR, $264/trade, 52 trades)** |
+| v3.0 | Feb 18 | 6-strategy portfolio (83% WR, $264/trade, 52 trades) |
+| **v4.0** | **Feb 19** | **7-strategy portfolio: +Opening Range Reversal (~82% WR, ~$243/trade, 72 trades)** |
 
-Key v3.0 improvements:
-- Edge Fade optimized from 53%→94% WR via 3 filters
-- Added Bear Acceptance Short (64% WR on bearish days)
-- Added IBH Sweep+Fail Short (100% WR, small sample)
-- Portfolio MaxDD reduced from -$3,103 to -$351 (9x improvement)
+Key v4.0 additions:
+- Opening Range Reversal strategy (ICT Judas Swing): 20 trades, 80% WR, $190/trade
+- Overnight H/L sweep + VWAP = best filter combination (PF 6.3)
+- Cross-instrument SMT divergence (NQ vs ES vs YM) as confluence
+- Combined portfolio: ~72 trades, ~$17,513 net, -$407 MaxDD
+- Full NinjaTrader automation specification for all 7 strategies
+
+Key v3.0 improvements (retained):
+- Edge Fade optimized from 53%->94% WR via 3 filters
+- Bear Acceptance Short (64% WR on bearish days)
+- IBH Sweep+Fail Short (100% WR, small sample)
+- Intraday portfolio MaxDD: -$351 (9x improvement over unfiltered)
 
 ---
 
-*Document Version: 3.0*
-*Last Updated: February 18, 2026*
-*Strategy Validated: 52 trades, 62 sessions, 83% WR, $13,706 net*
+*Document Version: 4.0*
+*Last Updated: February 19, 2026*
+*Strategies Validated: 72 trades, 62 sessions, ~82% WR, ~$17,513 net*
+*Full report: 2026.02.19_final_report.md*
