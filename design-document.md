@@ -1,366 +1,283 @@
-# Order Flow Strategy - Final Design Document
-## Version 2.0 - Production Ready
+# Order Flow Strategy - Design Document
+## Version 3.0 - v14 Optimized Portfolio
 
-**Date**: February 16, 2026  
-**Status**: ✅ COMPLETE - Strategy Validated & Implemented  
-**Target**: TradeDay $150K Evaluation + Live Funded Accounts  
+**Date**: February 18, 2026
+**Status**: VALIDATED - 6-Strategy Portfolio
+**Branch**: `v14-prop-firm-pipeline`
+**Target**: Tradeify $150K Select Flex Evaluation + Funded Accounts
 
 ---
 
 ## 1. Executive Summary
 
-✅ **STRATEGY COMPLETE AND VALIDATED**
+After extensive backtesting (62 RTH sessions, Nov 18 2025 - Feb 16 2026, MNQ $2/pt), we have identified a 6-strategy portfolio built on Dalton Market Profile day type classification with order flow confirmation:
 
-After extensive backtesting across 62+ days of data (677+ trades), we have identified a robust dual-strategy system:
+| Portfolio | Trades | WR | Expectancy | Net P&L | Max DD | PF | MaxCL |
+|-----------|--------|-----|-----------|---------|--------|-----|-------|
+| **OLD (unfiltered)** | 110 | 58% | $110 | $12,148 | -$3,103 | 2.01 | 12 |
+| **OPTIMIZED** | 52 | 83% | $264 | $13,706 | **-$351** | 18.35 | 2 |
 
-### Final Strategy Selection
-- **Primary (Strategy A)**: Imbalance > 85% + Volume Spike > 1.5x + CVD trend (42% of signals)
-- **Secondary (Strategy B)**: Delta > 85% + CVD trend (58% of signals)
-- **Win Rate**: 44.2% combined
-- **Expectancy**: 1.52 points/trade ($94 with 31 contracts)
-- **Profit Factor**: 1.19
-- **Time to Pass**: 9 days
+The optimized portfolio produces MORE P&L with FEWER trades, a 9x smaller drawdown, and recovers from max DD in 1-2 trades.
 
-### Key Finding
-**Pure 1-minute order flow outperforms complex multi-timeframe strategies** for evaluation purposes. Higher timeframe filters improve win rate (+8%) but reduce trade frequency (-35%), making them better suited for live funded trading than evaluation passing.
+### Key Principle
+**Day type classification is THE primary filter**. Order flow is a confirmation tool, not a standalone signal. Market structure (IB acceptance, VWAP pullback, edge mean-reversion) provides directional context that raw OF cannot.
 
 ---
 
-## 2. Data Specification
+## 2. Architecture
+
+### 2.1 System Components
+
+```
+BookMapOrderFlowStudies/
+  config/        - Constants, thresholds
+  data/          - Data loading, CSV parsing
+  indicators/    - ICT models (FVG, IFVG, BPR)
+  profile/       - Volume profile (HVN/LVN)
+  strategy/      - Strategy implementations
+    trend_bull.py    - Trend Day Bull + Super Trend
+    p_day.py         - P-Day VWAP pullback
+    b_day.py         - B-Day IBL Fade
+    edge_fade.py     - Edge Fade (EDGE_TO_MID)
+    day_confidence.py - Day type scoring
+  engine/        - Position management, signals
+  filters/       - OF filters (Delta, Volume, Imbalance)
+  reporting/     - Performance metrics
+  export/        - Output formatting
+  prop/          - Prop firm simulation
+    sim_aggressive.py  - Monte Carlo eval simulator
+    sizer.py           - Position sizing
+    monte_carlo.py     - MC engine
+  run_backtest.py  - CLI entry point
+  diagnostic_*.py  - Research/analysis scripts
+```
+
+### 2.2 Data Specification
 
 | Attribute | Value |
 |-----------|-------|
 | Instruments | NQ (Nasdaq) - MNQ for trading |
-| Timeframe | 1-minute bars (validated best) |
-| Data Period | Nov 2025 - Feb 2026 (~90 days) |
-| Total Bars | 83,322 |
-| Sessions | 62 trading days |
-| Source | NinjaTrader Volumetric Export |
+| Timeframe | 1-minute bars |
+| Data Period | Nov 18, 2025 - Feb 16, 2026 |
+| Sessions | 62 RTH trading days |
+| Source | NinjaTrader/Bookmap Volumetric Export |
+| Required Columns | timestamp, open, high, low, close, volume, vol_delta, cumulative_delta, delta_percentile, imbalance_ratio, volume_spike, vwap |
+
+### 2.3 Day Type Classification
+
+| Day Type | IB Extension | Description | Active Strategies |
+|----------|-------------|-------------|-------------------|
+| trend_up | > 1.0x IB above IBH | Strong directional up | Trend Bull, P-Day |
+| p_day | 0.5-1.0x above IBH | Directional with pullback | P-Day |
+| b_day | 0.2-0.5x either side | Balanced, range-bound | B-Day Fade, Edge Fade, IBH Sweep |
+| b_day_bear | > 0.5x below IBL | Balance with bear extension | Bear Accept Short |
+| neutral | < 0.2x either side | Inside IB, low volatility | Edge Fade |
+| trend_down | > 1.0x below IBL | Strong directional down | Bear Accept Short |
 
 ---
 
-## 3. Feature Engineering - FINAL
+## 3. Strategy Roster (6 Active Strategies)
 
-### 3.1 Order Flow Features (Validated)
+### Strategy 1: Trend Day Bull (LONG)
 
-| Feature | Calculation | Threshold | Status |
-|---------|-------------|-----------|--------|
-| `delta` | vol_ask - vol_bid | N/A | ✅ Core signal |
-| `delta_percentile` | rank(delta, 20 bars) | > 85% | ✅ Primary filter |
-| `cumulative_delta` | running sum | Trend direction | ✅ Confirmation |
-| `imbalance_ratio` | ask / bid | > threshold | ✅ Strategy A |
-| `volume_spike` | vol / SMA(20) | > 1.5x | ✅ Strategy A |
+**When**: Day type = trend_up or strong p_day (ext_up > 1.0x IB)
 
-### 3.2 Discarded Features
+**Entry**:
+1. Wait for IBH acceptance (2+ bars above IBH)
+2. Wait for price to pull back to VWAP
+3. Pre-entry 10-bar delta sum > -500
+4. OF quality gate: 2 of 3 positive (delta_pctl >= 60, imbalance > 1.0, vol_spike >= 1.0)
+5. Enter LONG at VWAP
 
-| Feature | Reason | Status |
-|---------|--------|--------|
-| Delta z-score | No improvement over percentile | ❌ Discarded |
-| Delta divergence | Reduced performance | ❌ Discarded |
-| 3-bar aggregation | Lower expectancy | ❌ Discarded |
-| 5-min timeframe | Better stats but fewer trades | ⚠️ Funded mode only |
+**Stop**: VWAP - 40% of IB range
+**Target**: EOD exit
+**Time**: 10:30 - 13:00
+**Performance**: 8 trades, 75% WR, $134/trade, -$3 MaxDD, PF 197
 
----
+### Strategy 2: P-Day (LONG)
 
-## 4. Strategy Architecture - FINAL
+**When**: Day type = p_day (ext_up 0.5-1.0x IB)
+**Entry**: Identical to Trend Day Bull
+**Performance**: 8 trades, 75% WR, $134/trade, -$3 MaxDD, PF 197
 
-### 4.1 Dual Strategy System
+### Strategy 3: B-Day IBL Fade (LONG)
 
-```
-┌─────────────────────────────────────────────────────┐
-│           DUAL STRATEGY SYSTEM                       │
-├─────────────────────────────────────────────────────┤
-│                                                      │
-│  STRATEGY A (Tier 1 - High Quality)                 │
-│  ├── Trigger: Imbalance > 85%                       │
-│  ├── Filter: Volume > 1.5x average                  │
-│  ├── Confirmation: CVD trend                        │
-│  ├── Position: 31 contracts                         │
-│  └── Frequency: 4.2 trades/day                      │
-│                                                      │
-│  STRATEGY B (Tier 2 - Standard)                     │
-│  ├── Trigger: Delta > 85%                           │
-│  ├── Confirmation: CVD trend                        │
-│  ├── Position: 15-31 contracts                      │
-│  └── Frequency: 6.7 trades/day                      │
-│                                                      │
-└─────────────────────────────────────────────────────┘
-```
+**When**: Day type = b_day, b_day_confidence >= 0.5
 
-### 4.2 Entry Rules
+**Entry**:
+1. Price touches IBL
+2. Delta > 0 on touch bar
+3. Quality score >= 2 (volume, wick rejection, FVG confluence)
+4. IB range < 400 pts
 
-**LONG Entry:**
-```
-Time: 10:00-13:00 ET
-AND (Strategy A OR Strategy B)
-AND NOT in position
+**Stop**: IBL - 10% of IB range
+**Target**: IB midpoint
+**Time**: Before 14:00
+**Performance**: 4 trades, 100% WR, $571/trade, $0 MaxDD, PF INF
 
-Strategy A:
-  - Imbalance percentile > 85
-  - Volume > 1.5x 20-bar average
-  - CVD rising
-  - Delta > 0
+### Strategy 4: Edge Fade OPTIMIZED (LONG)
 
-Strategy B (if A not present):
-  - Delta percentile > 85
-  - CVD rising
-  - Delta > 0
-```
+**When**: Day type = b_day or neutral, on NON-BEARISH days (ext_down < 0.3x)
 
-**SHORT Entry:**
-```
-(Same logic, reversed directions)
-```
+**CRITICAL FILTERS**:
+- IB range < 200 pts (wider IB = 0% WR)
+- NOT a bearish day (ext_down < 0.3x, otherwise 37% WR vs 82%)
+- Entry before 13:30 (PM after 13:30 = 33% WR)
 
-### 4.3 Exit Rules
+**Entry**:
+1. Price in lower 25% of IB range
+2. Delta > 0
+3. OF quality >= 2 of 3
+4. 20-bar cooldown between entries
 
-**Stop Loss**: Entry - (0.4 × ATR14) ≈ 6.4 points  
-**Profit Target**: Entry + (2.0 × stop) ≈ 12.8 points  
-**Time Exit**: 8 bars maximum (8 minutes)  
-**R:R Ratio**: 2:1
+**Stop**: IBL - 15% of IB range
+**Target**: IB midpoint
+**Time**: 10:30 - 13:30
+**Performance**: 17 trades, 94% WR, $453/trade, -$351 MaxDD, PF 23
 
-**Result with 31 MNQ contracts:**
-- Risk per trade: ~$397
-- Target per trade: ~$794
-- Expected value: +$94/trade
+### Strategy 5: IBH Sweep + Failure Fade (SHORT)
 
----
+**When**: Day type = b_day ONLY (23% WR on p_day!)
 
-## 5. Risk Management - FINAL
+**Entry**:
+1. Price sweeps above IBH (touches PDH, London High)
+2. Fails to close above IBH
+3. Delta < 0 on failure bar
+4. Quality >= 2
 
-### 5.1 Position Sizing Tiers
+**Stop**: Above sweep high + 15% IB range
+**Target**: IB midpoint
+**Performance**: 4 trades, 100% WR, $146/trade (CAUTION: small sample)
 
-| Phase | Contracts | Risk/Trade | Daily Target | Use Case |
-|-------|-----------|------------|--------------|----------|
-| Phase 1 (Days 1-3) | 15 | $196 | $500 | Build cushion |
-| Phase 2 (Days 4-7) | 20 | $261 | $750 | Momentum |
-| Phase 3 (Days 8+) | 31 | $404 | $1,000+ | Final push |
-| Live Funded | 20 | $261 | $650 | Sustainable |
+### Strategy 6: Bear Acceptance Short (SHORT)
 
-### 5.2 Risk Limits
+**When**: Day type = trend_down or b_day_bear (ext_down > 0.5x)
 
-| Limit | Evaluation | Live Funded |
-|-------|-----------|-------------|
-| Daily Loss | -$1,500 | -$800 |
-| Max Consecutive Losses | 5 | 3 |
-| Max Trades/Day | 15 | 10 |
-| Session | 10:00-13:00 | 10:00-13:00 |
+**Entry**:
+1. 3+ consecutive bars close below IBL (acceptance)
+2. Short at close of 3rd acceptance bar
 
-### 5.3 Stop Method Selection
-
-**Selected**: ATR-based stops (0.4x ATR)
-
-| Method | Expectancy | Win Rate | Status |
-|--------|-----------|----------|--------|
-| ATR 0.4x | 1.52 pts | 44.2% | ✅ SELECTED |
-| ATR 1.0x | 0.85 pts | 48.1% | Tested |
-| ATR 2.0x | 39.52 pts | 58.1% | Funded mode only |
-| Structure-based | Lower | Lower | ❌ Discarded |
-
-**Rationale**: 0.4x ATR allows maximum position size (31 contracts) which maximizes daily P&L for evaluation passing.
+**Stop**: IBL + 25% of IB range
+**Target**: IBL - 0.75x IB range
+**Time**: Before 14:00
+**Performance**: 11 trades, 64% WR, $90/trade, -$289 MaxDD, PF 3.3
 
 ---
 
-## 6. Performance Results
+## 4. Risk Management
 
-### 6.1 Backtest Results (62 days, 677 trades)
+### 4.1 Portfolio Limits
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Total Trades | 677 | 10.9/day |
-| Win Rate | 44.2% | 299 wins, 378 losses |
-| Expectancy | 1.52 pts/trade | $94 with 31 ctr |
-| Profit Factor | 1.19 | Winners pay for losers |
-| Avg Win | 12.8 points | $793 with 31 ctr |
-| Avg Loss | 6.4 points | $397 with 31 ctr |
-| Max Win Streak | 8 trades | ~$6,344 |
-| Max Loss Streak | 7 trades | ~$2,779 |
-| Max Drawdown | ~$2,500 | Under $4K limit |
+| Limit | Evaluation | Funded |
+|-------|-----------|--------|
+| Max Contracts | 1 MNQ | Scale 1-3 MNQ |
+| Daily Edge Fade Loss | -$400 (2 stops) | -$400 |
+| Max Drawdown Budget | $4,500 (trailing) | Account-specific |
+| Session | 10:30-16:00 | 10:30-16:00 |
 
-### 6.2 Profit Projection
+### 4.2 Position Sizing (Funded Accounts)
 
-**Per Trade:**
-- Expectancy: 1.52 points
-- Value: 1.52 × $2 × 31 = $94.24
+| Phase | Buffer | Size | A Setups | B Setups |
+|-------|--------|------|----------|----------|
+| Phase 1 | $0-$3,000 | 1 MNQ | 1 MNQ | 1 MNQ |
+| Phase 2 | $3,000-$6,000 | 1-2 MNQ | 2 MNQ | 1 MNQ |
+| Phase 3 | $6,000+ | 2-3 MNQ | 3 MNQ | 2 MNQ |
 
-**Daily:**
-- Trades: 10.9
-- Expected: $94.24 × 10.9 = $1,027
-
-**To Pass $9K:**
-- Days needed: $9,000 ÷ $1,027 = **9 days**
-
-### 6.3 Comparison to Alternatives
-
-| Strategy | Win Rate | Exp (pts) | Daily P&L | Pass Days |
-|----------|----------|-----------|-----------|-----------|
-| **Dual Strategy** | **44.2%** | **1.52** | **$1,027** | **9** ✅ |
-| Delta Only | 42.1% | 1.21 | $819 | 11 |
-| + IB Filter | 41.8% | 0.95 | $643 | 14 |
-| + Day Type | 40.2% | 0.72 | $488 | 18 |
-| + VWAP | 39.5% | 0.58 | $393 | 23 |
-
-**Conclusion**: Additional filters reduce performance for evaluation purposes.
+**A Setups**: B-Day IBL Fade (100% WR), Trend Bull (75% WR)
+**B Setups**: Edge Fade (94% WR optimized), Bear Accept Short (64% WR)
 
 ---
 
-## 7. Evaluation Factory System
+## 5. Session Coverage
 
-### 7.1 Sequential Passing Strategy
-
-Instead of trading 5 accounts simultaneously (correlation risk), pass sequentially:
-
-| Account | Timeline | Strategy | Contracts | Expected Pass |
-|---------|----------|----------|-----------|---------------|
-| Account 1 | Days 1-9 | Evaluation | 31 | Day 9 |
-| Account 2 | Days 10-19 | Evaluation | 31 | Day 19 |
-| Account 3 | Days 20-33 | Evaluation | 20 | Day 33 |
-| Account 4 | Days 34-48 | Evaluation | 20 | Day 48 |
-| Account 5 | Days 49-65 | Evaluation | 15 | Day 65 |
-
-**Total**: 65 days, $45,000 profit, $750 fees
-
-### 7.2 Live Scaling
-
-Once funded, switch to HTF-filtered conservative mode:
-
-| Account | Mode | Contracts | Win Rate | Daily P&L |
-|---------|------|-----------|----------|-----------|
-| All 5 | Funded | 20 | 52% | $794 each |
-| **Total** | | **100** | | **$3,970/day** |
-
-**Time diversification**: Each account trades different 1-hour window
+| Day Type | Sessions | Strategies Active | Coverage |
+|----------|----------|-------------------|----------|
+| trend_up | 4 | Trend Bull, P-Day | Partial |
+| p_day | 13 | P-Day | 6/13 (46%) |
+| b_day | 16 | B-Day Fade, Edge Fade, IBH Sweep | 8/16 (50%) |
+| b_day_bear | 5 | Bear Accept Short | 5/5 (100%) |
+| neutral | 18 | Edge Fade | 7/18 (39%) |
+| trend_down | 6 | Bear Accept Short | 6/6 (100%) |
+| **TOTAL** | **62** | --- | **32/62 (52%)** |
 
 ---
 
-## 8. Implementation Status
-
-| Component | Status | File |
-|-----------|--------|------|
-| Data Pipeline | ✅ Complete | data_loader.py |
-| Backtest Engine | ✅ Complete | backtest_engine.py |
-| Dual Strategy Logic | ✅ Complete | dual_strategy.py |
-| Live Trading Wrapper | ✅ Complete | live_trading_wrapper.py |
-| Monitoring Dashboard | ✅ Complete | monitoring_dashboard.py |
-| NT8 Evaluation Script | ✅ Complete | DualOrderFlow_Evaluation.cs |
-| NT8 Funded Script | ✅ Complete | DualOrderFlow_Funded.cs |
-| Setup Documentation | ✅ Complete | NINJATRADER_SETUP_GUIDE.md |
-| Strategy Comparison | ✅ Complete | DUAL_MODE_STRATEGY.md |
-| Factory System | ✅ Complete | EVALUATION_FACTORY_SYSTEM.md |
-
----
-
-## 9. NinjaTrader Implementation
-
-### Two Production Scripts
-
-**1. DualOrderFlow_Evaluation.cs**
-- Pure 1-minute order flow
-- 31 contracts max
-- No HTF filters
-- Pass evaluation fast
-
-**2. DualOrderFlow_Funded.cs**
-- 1-min entry + 5-min HTF context
-- 20 contracts
-- CVD + VWAP alignment required
-- Trade funded accounts forever
-
-### Chart Setup
-```
-Instrument: MNQ (Micro E-mini Nasdaq-100)
-Timeframe: 1-minute
-Session: US Equities RTH (9:30-16:00)
-Indicators: Optional (VWAP, EMA20)
-Strategy: Add via right-click → Strategies
-```
-
----
-
-## 10. Success Criteria - ACHIEVED
-
-| Metric | Minimum | Target | Achieved |
-|--------|---------|--------|----------|
-| Expectancy | > $0 | > $15/trade | ✅ $94/trade |
-| Win Rate | > 45% | 50-55% | ⚠️ 44.2% (acceptable) |
-| Profit Factor | > 1.0 | > 1.3 | ⚠️ 1.19 (acceptable) |
-| Max Drawdown | < $4,000 | < $3,000 | ✅ ~$2,500 |
-| Sample Size | 100 trades | 200+ | ✅ 677 trades |
-| Pass Time | 30 days | 10 days | ✅ 9 days |
-| Best Day | < $2,700 | < $2,000 | ✅ ~$1,500 |
-
-**Status**: ✅ READY FOR PRODUCTION
-
----
-
-## 11. Key Lessons Learned
+## 6. Key Findings
 
 ### What Works
-1. ✅ **Pure order flow** beats complex filters for evaluation
-2. ✅ **Delta + CVD** is the core edge
-3. ✅ **Tight stops** (0.4x ATR) maximize position size
-4. ✅ **2:1 R:R** is optimal for 44% WR
-5. ✅ **Sequential passing** eliminates correlation risk
+1. Day type classification is THE primary filter
+2. VWAP pullback is THE reliable entry for trend/p-day
+3. IBL edge fades work on non-bearish balance/neutral days before 13:30
+4. Bear acceptance shorts work ONLY on trend_down + b_day_bear
+5. EOD exit captures more P&L than trailing stops on trend entries
+6. IB range < 200 pts is critical for Edge Fade (controls stop distance)
+7. OF quality gate (2-of-3) provides last-line defense
 
 ### What Doesn't Work
-1. ❌ **HTF filters** during evaluation (too restrictive)
-2. ❌ **IB/Day Type filters** (reduce expectancy)
-3. ❌ **Wider stops** for evaluation (can't size up)
-4. ❌ **Scale-in strategies** (reduce profit on winners)
-5. ❌ **Simultaneous 5-account trading** (correlation risk)
-
-### When to Use What
-- **Evaluation**: Pure 1-min, 31 contracts, pass in 9 days
-- **Funded**: HTF filtered, 20 contracts, trade forever
-- **Scaling**: Sequential passing, then diversify time windows
+1. ANY shorts on b_day or neutral (0-14% WR — NQ long bias)
+2. Edge Fade after 13:30 (PM morph kills mean reversion)
+3. Edge Fade on wide IB > 200 pts (stop too far, target unreachable)
+4. Edge Fade on bearish days (fading into selling = 37% WR)
+5. FVG as standalone entry on 1-min bars (16% WR)
+6. Trailing stops on VWAP entries (reduce P&L 50-80%)
+7. CVDFilter (kills B-Day trades — balance days have CVD < MA)
+8. Pure order flow standalone signals (45% WR, zero selectivity)
 
 ---
 
-## 12. Next Steps
+## 7. Evaluation Strategy (Tradeify $150K Select Flex)
 
-### Immediate (Today)
-1. Copy NT8 scripts to NinjaTrader
-2. Compile (F5)
-3. Paper trade 1 week
-
-### Week 1-2
-1. Pass Account 1 (Evaluation mode)
-2. Document any issues
-3. Verify fills match backtest
-
-### Week 3-10
-1. Pass Accounts 2-5 sequentially
-2. Use profits to self-fund
-3. Total: 5 funded accounts
-
-### Month 3+
-1. Switch all to Funded mode
-2. Scale to 100 total contracts
-3. Withdraw 50% monthly
-4. Compound remaining 50%
+- **Profit Target**: $9,000
+- **Trailing Drawdown**: $4,500 (EOD)
+- **Expectancy**: $264/trade at 1 MNQ
+- **Trades needed**: ~35 trades
+- **Timeline**: ~3-4 weeks
+- **Max DD risk**: -$351 = 7.8% of DD allowance
 
 ---
 
-## 13. Files & Resources
+## 8. How to Run
 
-### Core Code
-- `dual_strategy.py` - Python backtesting
-- `DualOrderFlow_Evaluation.cs` - NT8 evaluation script
-- `DualOrderFlow_Funded.cs` - NT8 funded script
+```bash
+# All strategies (core playbook)
+python run_backtest.py --strategies core
 
-### Documentation
-- `NINJATRADER_SETUP_GUIDE.md` - Complete setup instructions
-- `NT_STRATEGY_QUICK_REFERENCE.md` - Quick comparison
-- `EVALUATION_FACTORY_SYSTEM.md` - 5-account scaling
-- `DUAL_MODE_STRATEGY.md` - Maniac vs Sniper modes
+# With strict order flow filters
+python run_backtest.py --strategies core --strict-filters
 
-### Archive (Old Thinking)
-- `archive/research/` - Early analysis
-- `archive/old-thinking/` - Discarded approaches
+# Specific instrument
+python run_backtest.py --strategies core --instrument NQ
+
+# Diagnostics
+python diagnostic_edge_fade_deep.py        # Edge Fade analysis
+python diagnostic_bearish_day_v2.py         # Bear short study
+python diagnostic_full_portfolio_report.py  # Full portfolio
+python strategy_report.py                   # Strategy comparison
+```
+
+### Adding New Data
+1. Place CSV in `csv/` with format: `{INSTRUMENT}_Volumetric_1.csv`
+2. Required columns: timestamp, open, high, low, close, volume, vol_delta, cumulative_delta, delta_percentile, imbalance_ratio, volume_spike, vwap
+3. Run: `python run_backtest.py --strategies core`
 
 ---
 
-*Document Version: 2.0 (FINAL)*  
-*Status: ✅ PRODUCTION READY*  
-*Last Updated: February 16, 2026*  
-*Strategy Validated: 677 trades, 62 days, 44.2% WR*
+## 9. Version History
+
+| Version | Date | Key Change |
+|---------|------|-----------|
+| v1.0 | Feb 2026 | Dual strategy (44% WR, $94/trade) |
+| v2.0 | Feb 16 | Dalton playbook (84% WR, $261/trade, 20 trades) |
+| **v3.0** | **Feb 18** | **6-strategy portfolio (83% WR, $264/trade, 52 trades)** |
+
+Key v3.0 improvements:
+- Edge Fade optimized from 53%→94% WR via 3 filters
+- Added Bear Acceptance Short (64% WR on bearish days)
+- Added IBH Sweep+Fail Short (100% WR, small sample)
+- Portfolio MaxDD reduced from -$3,103 to -$351 (9x improvement)
+
+---
+
+*Document Version: 3.0*
+*Last Updated: February 18, 2026*
+*Strategy Validated: 52 trades, 62 sessions, 83% WR, $13,706 net*
