@@ -329,29 +329,30 @@ python diagnostic_opening_range_v2.py       # OR v2 optimized (20 trades)
 
 ### Hybrid Architecture: NinjaTrader + Python Signal API
 
+Two deployment options — both share the same Python codebase and NinjaScript client:
+
+**Design A: Local ($0/month)** — API runs on same machine as NinjaTrader.
 ```
-NinjaTrader 8 (Execution)  ─── HTTPS POST /signal ──→  Python API (GCP Cloud Run)
-  - Market data (MNQ+ES+YM)                              - All 7 strategies
-  - Order execution                                       - Day type classification
-  - Position management      ←── JSON signal ────────    - OF quality gate
-  - Stop/target management                                - IB/VWAP computation
+NinjaTrader 8  ─── POST /signal ──→  Python API (localhost:8080)
+                ←── JSON signal ────
 ```
 
-**How it works**:
-1. NinjaTrader sends 1-min bar data (OHLCV + delta + cross-instruments) to Python API
-2. Python evaluates all 7 strategies against session state (IB, VWAP, day type, acceptance)
-3. Returns trade signal: `{action: "ENTER_LONG", stop, target, model, confidence}`
-4. NinjaTrader executes: `EnterLong()`, `SetStopLoss()`, `SetProfitTarget()`
+**Design B: Cloud ($30-50/month)** — API on GCP Cloud Run + signal publishing for subscribers.
+```
+NinjaTrader 8  ─── POST /signal ──→  Python API (Cloud Run)
+                ←── JSON signal ────  ──→ GCS Bucket (trade log)
+                                           ──→ Subscriber API (public)
+```
 
-**Key advantages**:
+**Key advantages** (both designs):
 - Single codebase for backtesting AND live trading (no C# translation bugs)
-- Faster iteration: change strategy in Python, deploy in 30 sec, no NT restart
+- Faster iteration: change strategy in Python, auto-reload, no NT restart
 - Full Python ecosystem: pandas, numpy, scipy
 - Git-tracked strategies vs NinjaScript project files
 
-**Latency**: 50-200ms round trip, fine for 1-min bars (60,000ms budget).
+**Design A**: $0/month, 1-5ms latency, no internet dependency.
+**Design B**: $30-50/month, 50-200ms latency, adds signal publishing for subscribers.
 **Fail-safe**: API error = no signal = no trade (never trades on stale data).
-**Cost**: ~$30-50/month GCP Cloud Run with min-instances=1 during market hours.
 
 ### OR V3 Session Coverage (from diagnostic_opening_range_v3.py)
 
@@ -375,13 +376,13 @@ NinjaTrader 8 (Execution)  ─── HTTPS POST /signal ──→  Python API (G
 | v2.0 | Feb 16 | Dalton playbook (84% WR, $261/trade, 20 trades) |
 | v3.0 | Feb 18 | 6-strategy portfolio (83% WR, $264/trade, 52 trades) |
 | v4.0 | Feb 19 | 7-strategy portfolio: +Opening Range Reversal (~82% WR, ~$243/trade, 72 trades) |
-| **v4.1** | **Feb 19** | **Automation architecture: NinjaTrader + Python Signal API (GCP Cloud Run). OR V3 coverage gap analysis (89% session coverage). All strategies confirmed fully automatable.** |
+| **v4.1** | **Feb 19** | **Dual automation architecture: Local ($0) + Cloud (GCP, signal publishing). OR V3 gap analysis (89% coverage). All strategies fully automatable.** |
 
 Key v4.1 additions:
-- Hybrid NinjaTrader → Python Signal API architecture (AUTOMATION_ARCHITECTURE.md)
-- Full FastAPI spec with endpoints: /signal, /session_init, /health, /state
+- Dual deployment architecture: Local ($0/month) + GCP Cloud Run ($30-50/month with signal publishing)
+- Full FastAPI spec with endpoints: /signal, /session_init, /health, /state, /trades (public)
 - NinjaScript C# client template with AddDataSeries for ES/YM
-- GCP Cloud Run deployment config (Dockerfile, ~$30-50/month)
+- GCS Bucket trade logging + public subscriber API for signal distribution
 - OR V3 gap analysis: fixed 3 bugs in V1 detection (London H/L, level priority, threshold)
 - OR V3 combined models reach 55/62 sessions (89% coverage), $8,882 net
 - All 7 strategies confirmed FULLY automatable (removed "partially" labels)

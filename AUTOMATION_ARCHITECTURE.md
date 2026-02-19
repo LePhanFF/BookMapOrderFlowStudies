@@ -3,34 +3,165 @@
 ## Overview
 
 Hybrid architecture where **NinjaTrader 8** handles execution (market data, orders, positions)
-and a **Python Signal API** (deployed on GCP Cloud Run) handles all strategy logic. This gives
-us a single codebase for backtesting AND live trading — no C# translation of our 7 strategies.
+and a **Python Signal API** handles all strategy logic. This gives us a single codebase for
+backtesting AND live trading — no C# translation of our 7 strategies.
+
+**Two deployment designs** — same codebase, different infrastructure:
+- **Design A (Local)**: $0/month, fastest, for personal trading
+- **Design B (GCP Cloud)**: $30-50/month, adds signal publishing for subscribers
 
 ---
 
-## Architecture
+## Design A: Local Deployment ($0/month)
 
 ```
- LIVE MARKET                    CLOUD                         LOCAL DEV
+ YOUR TRADING MACHINE (localhost)
 +----------------+     +-------------------------+     +------------------+
-| NinjaTrader 8  |     |   GCP Cloud Run         |     | Python Backtest  |
-| (Execution)    |     |   (Signal Generation)   |     | (Same Code)      |
+| NinjaTrader 8  |     |  Python Signal API      |     | Python Backtest  |
+| (Execution)    |     |  (localhost:8080)        |     | (Same Code)      |
 |                |     |                         |     |                  |
-| MNQ data feed  |---->| POST /bar               |     | run_backtest.py  |
-| ES data feed   |---->|   {bars, levels, of}    |     | Same strategies  |
+| MNQ data feed  |---->| POST /signal            |     | run_backtest.py  |
+| ES data feed   |---->|   {bar, levels, of}     |     | Same strategies  |
 | YM data feed   |---->|                         |     | Same filters     |
 |                |     | Strategy Engine:         |     | Same engine      |
 | Receives:      |<----| - Day type classify     |     |                  |
 | {action, stop, |     | - IB/VWAP compute       |     | CSV data input   |
 |  target, size} |     | - 7 strategy evaluate    |     | instead of API   |
 |                |     | - OF quality gate        |     |                  |
-| Executes:      |     | - Signal generation      |     |                  |
-| - Place orders |     |                         |     |                  |
-| - Manage stops |     | Returns:                |     |                  |
-| - Track P&L    |     | {action, stop, target,  |     |                  |
-+----------------+     |  model, confidence}     |     +------------------+
-                       +-------------------------+
+| Executes:      |     |                         |     |                  |
+| - Place orders |     | Returns:                |     |                  |
+| - Manage stops |     | {action, stop, target,  |     |                  |
+| - Track P&L    |     |  model, confidence}     |     |                  |
++----------------+     +-------------------------+     +------------------+
+  All on localhost — $0/month, ~1-5ms latency, no internet dependency
 ```
+
+**Start the API:**
+```bash
+# Bare Python (simplest)
+pip install fastapi uvicorn pydantic pandas numpy scipy
+uvicorn api.main:app --host 127.0.0.1 --port 8080
+
+# Or Docker (isolated, auto-restart)
+docker build -t trading-signal-api .
+docker run -d --restart unless-stopped -p 8080:8080 trading-signal-api
+```
+
+**Windows Task Scheduler**: Auto-start at 9:20 AM Mon-Fri.
+
+---
+
+## Design B: GCP Cloud Deployment ($30-50/month) + Signal Publishing
+
+```
+ YOUR MACHINE                        GCP CLOUD
++----------------+         +----------------------------------+
+| NinjaTrader 8  |  HTTPS  |  Cloud Run: Signal API           |
+| (Execution)    |-------->|  - All 7 strategies              |
+|                |<--------|  - Returns trade signals          |
+| Executes:      |         |                                  |
+| - Place orders |         |  On each signal:                 |
+| - Manage stops |         |  - Write to GCS Bucket           |
+| - Track P&L   |         |  - (trade log JSON/CSV)          |
++----------------+         |                                  |
+                           +----------------------------------+
+                                        |
+                           +----------------------------------+
+                           |  Cloud Run: Subscriber API       |
+                           |  (public, read-only)             |
+                           |                                  |
+                           |  GET /trades/today               |
+                           |  GET /trades/history             |
+                           |  GET /performance                |
+                           |  WebSocket /stream  (real-time)  |
+                           |                                  |
+                           |  Reads from GCS Bucket           |
+                           |  API key auth for subscribers    |
+                           +----------------------------------+
+                                        |
+                           +----------------------------------+
+                           |  SUBSCRIBERS                     |
+                           |  - Web dashboard                 |
+                           |  - Discord/Telegram bot          |
+                           |  - Mobile app                    |
+                           |  - Other traders' NinjaTrader    |
+                           +----------------------------------+
+```
+
+### Signal Publishing Flow
+
+1. NinjaTrader sends bar data to Cloud Run Signal API
+2. Signal API evaluates strategies, returns signal to NinjaTrader
+3. **If signal is a trade**: API also writes to GCS Bucket:
+   ```json
+   gs://trading-signals-bucket/2026/02/19/trades.jsonl
+   {
+     "timestamp": "2026-02-19T11:47:00",
+     "action": "ENTER_LONG",
+     "strategy": "Edge Fade",
+     "model": "EDGE_TO_MID",
+     "entry": 21852.75,
+     "stop": 21785.25,
+     "target": 21827.50,
+     "day_type": "b_day",
+     "confidence": "high",
+     "reasoning": "Price in lower 25% IB, delta>0, OF 2/3, IB<200"
+   }
+   ```
+4. Subscriber API reads from GCS and serves to internet
+
+### Subscriber API Endpoints (Public, Read-Only)
+
+```
+GET  /trades/today          — Today's signals (with 5-min delay for free tier)
+GET  /trades/history?days=7 — Historical trades
+GET  /performance           — Running WR, expectancy, P&L
+GET  /strategies            — Active strategy descriptions
+WS   /stream                — Real-time signal stream (premium tier)
+```
+
+### Subscriber Tiers (Future Revenue)
+
+| Tier | Price | Features |
+|------|-------|----------|
+| Free | $0 | Daily summary (EOD), performance stats |
+| Basic | $49/mo | Real-time signals (5-min delay), trade history |
+| Premium | $149/mo | Real-time WebSocket stream, no delay, all strategies |
+| Enterprise | Custom | API access, custom filters, white-label |
+
+### GCS Bucket Structure
+```
+gs://trading-signals-bucket/
+  2026/
+    02/
+      19/
+        session_init.json      — Pre-market levels, day config
+        trades.jsonl           — Trade signals (append-only)
+        bars.jsonl             — Optional: all bar data for replay
+        performance.json       — Running session P&L
+      18/
+        ...
+  subscriber_keys/             — API key management
+  performance/
+    monthly_summary.json       — Aggregate stats
+```
+
+### Comparison
+
+| Factor | Design A (Local) | Design B (GCP Cloud) |
+|--------|-----------------|---------------------|
+| **Cost** | **$0/month** | $30-50/month (+ GCS ~$1/month) |
+| **Latency** | **1-5ms** | 50-200ms |
+| **Internet** | **Not needed** | Required |
+| **Signal publishing** | No | **Yes — subscribers can follow** |
+| **Revenue potential** | None | **$49-149/subscriber/month** |
+| **Complexity** | Simple | Moderate (GCP setup) |
+| **Best for** | Personal trading | Trading + signal business |
+
+**Recommendation**: Start with **Design A** for paper trading and live eval. Switch to
+**Design B** once you have a track record to publish (after passing prop firm eval).
+
+**API call volume**: ~390 calls/day (6.5 hrs x 60 bars/hr). Trivially light for both.
 
 ---
 
@@ -155,11 +286,24 @@ Response: `{"status": "ok", "session_id": "2026-02-19-MNQ"}`
 
 ### Endpoint: `GET /health`
 
-Health check for Cloud Run. Returns `{"status": "healthy", "version": "1.0.0"}`.
+Health check. Returns `{"status": "healthy", "version": "1.0.0"}`.
 
 ### Endpoint: `GET /state`
 
 Debug endpoint returning current session state (day type, IB levels, active positions, strategy states).
+
+### Subscriber Endpoints (Design B only — public, read-only)
+
+```
+GET  /trades/today                — Today's trade signals
+GET  /trades/history?days=7       — Historical trade log
+GET  /performance                 — Running WR, expectancy, equity curve
+GET  /strategies                  — Strategy descriptions and status
+WS   /stream                      — Real-time signal WebSocket (premium)
+```
+
+All subscriber endpoints require API key in header: `X-API-Key: subscriber_key_here`.
+Reads from GCS bucket (not from live session state).
 
 ---
 
@@ -167,19 +311,30 @@ Debug endpoint returning current session state (day type, IB levels, active posi
 
 ```python
 # api/main.py
-from fastapi import FastAPI, HTTPException
+import os
+import json
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, time
 import uvicorn
 
 from api.session_manager import SessionManager
 from api.signal_engine import SignalEngine
+from api.trade_logger import TradeLogger  # GCS logging (Design B only)
 
 app = FastAPI(title="Trading Signal API", version="1.0.0")
 
 # Global session manager (one per running instance)
 session_mgr = SessionManager()
+
+# Trade logger: writes to GCS in Design B, local JSON in Design A
+DEPLOY_MODE = os.getenv("DEPLOY_MODE", "local")  # "local" or "cloud"
+trade_logger = TradeLogger(
+    mode=DEPLOY_MODE,
+    bucket_name=os.getenv("GCS_BUCKET", "trading-signals-bucket"),
+    local_path=os.getenv("LOG_PATH", "./trade_logs"),
+)
 
 
 class BarData(BaseModel):
@@ -249,6 +404,11 @@ async def get_signal(req: SignalRequest):
         session_levels=req.session_levels,
         position=req.position,
     )
+
+    # Log trade signals (both designs - local JSON or GCS)
+    if signal.get("action", "NONE") != "NONE":
+        trade_logger.log_trade(req.session_date, signal)
+
     return signal
 
 
@@ -260,18 +420,72 @@ async def init_session(data: dict):
         instrument=data.get("instrument", "MNQ"),
         premarket_levels=data.get("premarket_levels", {}),
     )
+    trade_logger.log_session_init(data["session_date"], data)
     return {"status": "ok", "session_id": f"{data['session_date']}-{data.get('instrument', 'MNQ')}"}
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "version": "1.0.0"}
+    return {"status": "healthy", "version": "1.0.0", "mode": DEPLOY_MODE}
 
 
 @app.get("/state")
 async def get_state():
     """Debug: return current session state."""
     return session_mgr.get_state_snapshot()
+
+
+# ===== SUBSCRIBER ENDPOINTS (Design B — public, read-only) =====
+
+def verify_subscriber_key(x_api_key: str = Header(None)):
+    """Validate subscriber API key."""
+    if DEPLOY_MODE != "cloud":
+        raise HTTPException(404, "Subscriber endpoints only available in cloud mode")
+    if not x_api_key or not trade_logger.verify_key(x_api_key):
+        raise HTTPException(401, "Invalid or missing API key")
+    return x_api_key
+
+
+@app.get("/trades/today")
+async def get_today_trades(key: str = Depends(verify_subscriber_key)):
+    """Today's trade signals for subscribers."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return trade_logger.get_trades(today)
+
+
+@app.get("/trades/history")
+async def get_trade_history(days: int = 7, key: str = Depends(verify_subscriber_key)):
+    """Historical trade log for subscribers."""
+    return trade_logger.get_history(days=min(days, 90))
+
+
+@app.get("/performance")
+async def get_performance(key: str = Depends(verify_subscriber_key)):
+    """Running performance metrics for subscribers."""
+    return trade_logger.get_performance_summary()
+
+
+@app.get("/strategies")
+async def get_strategies(key: str = Depends(verify_subscriber_key)):
+    """Active strategy descriptions."""
+    return {
+        "strategies": [
+            {"name": "Trend Day Bull", "direction": "LONG", "time": "10:30-13:00",
+             "description": "VWAP pullback after IBH acceptance on trend/p-day"},
+            {"name": "P-Day", "direction": "LONG", "time": "10:30-13:00",
+             "description": "VWAP pullback on directional days (0.5-1.0x IB extension)"},
+            {"name": "B-Day IBL Fade", "direction": "LONG", "time": "10:30-14:00",
+             "description": "IBL edge fade on balance days with delta confirmation"},
+            {"name": "Edge Fade", "direction": "LONG", "time": "10:30-13:30",
+             "description": "IB lower 25% mean reversion, non-bearish, IB<200pts"},
+            {"name": "IBH Sweep+Fail", "direction": "SHORT", "time": "10:30-16:00",
+             "description": "IBH sweep failure on b_day only"},
+            {"name": "Bear Accept Short", "direction": "SHORT", "time": "10:30-14:00",
+             "description": "3+ bars below IBL on bearish days"},
+            {"name": "OR Reversal", "direction": "BOTH", "time": "9:30-10:30",
+             "description": "Judas swing reversal at pre-market liquidity levels"},
+        ]
+    }
 
 
 if __name__ == "__main__":
@@ -283,7 +497,8 @@ if __name__ == "__main__":
 ## Session Manager (Server-Side State)
 
 The API maintains session state between calls (bars, IB levels, VWAP, day type).
-This is safe because Cloud Run keeps the container warm between requests.
+This is safe because the process runs continuously on your local machine (or on Cloud Run
+with min-instances=1 if using cloud).
 
 ```python
 # api/session_manager.py
@@ -481,6 +696,119 @@ class SessionManager:
 
 ---
 
+## Trade Logger (GCS + Local)
+
+Logs every trade signal. In Design A, writes to local JSON files. In Design B, writes
+to GCS bucket AND local files.
+
+```python
+# api/trade_logger.py
+import os
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional
+
+
+class TradeLogger:
+    """
+    Dual-mode trade logger:
+    - 'local': writes JSONL to ./trade_logs/{date}/trades.jsonl
+    - 'cloud': writes to GCS bucket + local backup
+    """
+
+    def __init__(self, mode: str = "local", bucket_name: str = "", local_path: str = "./trade_logs"):
+        self.mode = mode
+        self.bucket_name = bucket_name
+        self.local_path = Path(local_path)
+        self.local_path.mkdir(parents=True, exist_ok=True)
+        self._gcs_client = None
+
+        if mode == "cloud" and bucket_name:
+            from google.cloud import storage
+            self._gcs_client = storage.Client()
+            self._bucket = self._gcs_client.bucket(bucket_name)
+
+    def log_trade(self, session_date: str, signal: dict):
+        """Log a trade signal (entry, exit, stop move)."""
+        record = {
+            "logged_at": datetime.utcnow().isoformat(),
+            "session_date": session_date,
+            **signal,
+        }
+        line = json.dumps(record) + "\n"
+
+        # Always write locally
+        date_dir = self.local_path / session_date
+        date_dir.mkdir(exist_ok=True)
+        with open(date_dir / "trades.jsonl", "a") as f:
+            f.write(line)
+
+        # Write to GCS in cloud mode
+        if self.mode == "cloud" and self._gcs_client:
+            blob_path = f"{session_date.replace('-', '/')}/trades.jsonl"
+            blob = self._bucket.blob(blob_path)
+            # Append to existing blob
+            existing = ""
+            if blob.exists():
+                existing = blob.download_as_text()
+            blob.upload_from_string(existing + line)
+
+    def log_session_init(self, session_date: str, data: dict):
+        """Log session initialization."""
+        record = {"logged_at": datetime.utcnow().isoformat(), **data}
+        date_dir = self.local_path / session_date
+        date_dir.mkdir(exist_ok=True)
+        with open(date_dir / "session_init.json", "w") as f:
+            json.dump(record, f, indent=2)
+
+        if self.mode == "cloud" and self._gcs_client:
+            blob_path = f"{session_date.replace('-', '/')}/session_init.json"
+            blob = self._bucket.blob(blob_path)
+            blob.upload_from_string(json.dumps(record, indent=2))
+
+    def get_trades(self, session_date: str) -> List[dict]:
+        """Get trades for a specific date."""
+        path = self.local_path / session_date / "trades.jsonl"
+        if not path.exists():
+            return []
+        trades = []
+        for line in path.read_text().strip().split("\n"):
+            if line:
+                trades.append(json.loads(line))
+        return trades
+
+    def get_history(self, days: int = 7) -> List[dict]:
+        """Get trade history for past N days."""
+        all_trades = []
+        for i in range(days):
+            date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            all_trades.extend(self.get_trades(date))
+        return all_trades
+
+    def get_performance_summary(self) -> dict:
+        """Compute running performance from logged trades."""
+        trades = self.get_history(days=90)
+        entries = [t for t in trades if t.get("action") in ("ENTER_LONG", "ENTER_SHORT")]
+        exits = [t for t in trades if t.get("action") == "EXIT"]
+        return {
+            "total_signals": len(entries),
+            "total_exits": len(exits),
+            "strategies_active": 7,
+            "note": "Detailed P&L requires matching entries to exits (TODO)",
+        }
+
+    def verify_key(self, api_key: str) -> bool:
+        """Verify subscriber API key (simple file-based for now)."""
+        keys_file = self.local_path / "subscriber_keys.json"
+        if not keys_file.exists():
+            return False
+        keys = json.loads(keys_file.read_text())
+        return api_key in keys.get("valid_keys", [])
+```
+
+---
+
 ## Signal Engine (Strategy Evaluation)
 
 ```python
@@ -602,7 +930,9 @@ namespace NinjaTrader.NinjaScript.Strategies
     public class PythonSignalClient : Strategy
     {
         private static readonly HttpClient client = new HttpClient();
-        private string apiUrl = "https://your-service-xyz.run.app";
+        // LOCAL: point to localhost (same machine as NinjaTrader)
+        private string apiUrl = "http://localhost:8080";
+        // CLOUD (optional): private string apiUrl = "https://your-service-xyz.run.app";
 
         // Cross-instrument data series
         private int esIdx, ymIdx;
@@ -625,6 +955,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AddDataSeries("YM 03-26", BarsPeriodType.Minute, 1);  // Index 2
                 esIdx = 1;
                 ymIdx = 2;
+
+                // LOCAL: short timeout since API is on same machine
+                client.Timeout = TimeSpan.FromSeconds(2);
             }
             else if (State == State.DataLoaded)
             {
@@ -808,20 +1141,43 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 ---
 
-## GCP Cloud Run Deployment
+## Deployment
 
-### Dockerfile
+### Design A: Local Deployment ($0/month)
 
+```bash
+# Install deps (one time)
+pip install fastapi uvicorn pydantic pandas numpy scipy
+
+# Start before market open (bare Python)
+cd C:\Users\lehph\Documents\GitHub\BookMapOrderFlowStudies
+set DEPLOY_MODE=local
+uvicorn api.main:app --host 127.0.0.1 --port 8080
+
+# Or with auto-reload during development
+uvicorn api.main:app --host 127.0.0.1 --port 8080 --reload
+
+# Or Docker (auto-restart on crash)
+docker build -t trading-signal-api .
+docker run -d --restart unless-stopped -p 8080:8080 -e DEPLOY_MODE=local trading-signal-api
+```
+
+NinjaScript `apiUrl` = `"http://localhost:8080"`
+
+**Windows Task Scheduler**: Auto-start at 9:20 AM Mon-Fri.
+Trade logs saved to `./trade_logs/{date}/trades.jsonl` (local only).
+
+### Design B: GCP Cloud Deployment ($30-50/month + signal publishing)
+
+**Dockerfile:**
 ```dockerfile
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
 COPY api/ ./api/
 COPY strategy/ ./strategy/
 COPY indicators/ ./indicators/
@@ -831,28 +1187,20 @@ COPY engine/ ./engine/
 COPY filters/ ./filters/
 COPY profile/ ./profile/
 
-# Cloud Run uses PORT env var
 ENV PORT=8080
+ENV DEPLOY_MODE=cloud
+ENV GCS_BUCKET=trading-signals-bucket
 EXPOSE 8080
 
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080"]
 ```
 
-### requirements.txt
-
-```
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-pydantic>=2.5.0
-pandas>=2.1.0
-numpy>=1.25.0
-scipy>=1.11.0
-```
-
-### Deploy Commands
-
+**Deploy:**
 ```bash
-# Build and deploy to GCP Cloud Run
+# Create GCS bucket for trade logs + subscriber data
+gsutil mb gs://trading-signals-bucket
+
+# Build and deploy
 gcloud builds submit --tag gcr.io/YOUR_PROJECT/trading-signal-api
 
 gcloud run deploy trading-signal-api \
@@ -864,22 +1212,41 @@ gcloud run deploy trading-signal-api \
   --min-instances 1 \
   --max-instances 1 \
   --timeout 60 \
+  --set-env-vars DEPLOY_MODE=cloud,GCS_BUCKET=trading-signals-bucket \
   --no-allow-unauthenticated \
   --service-account trading-bot@YOUR_PROJECT.iam.gserviceaccount.com
 ```
 
-**Key settings:**
-- `--min-instances 1`: Keep container warm (no cold start during market hours)
-- `--max-instances 1`: Single instance to maintain session state
-- `--no-allow-unauthenticated`: Require API key/token
-- `--memory 1Gi`: Enough for pandas + numpy + bar history
-- `--timeout 60`: Generous timeout for complex strategy evaluation
+NinjaScript `apiUrl` = `"https://trading-signal-api-xxxxx.run.app"`
 
-### Cost Estimate
+Trade logs saved to GCS bucket AND local backup.
+Subscriber endpoints (`/trades/today`, `/performance`, etc.) available to internet.
 
-- Cloud Run with min-instances=1: ~$30-50/month
-- Only runs during market hours (6.5 hrs/day, 5 days/week)
-- Could use Cloud Scheduler to scale to 0 outside market hours
+### requirements.txt
+
+```
+# Core (both designs)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pandas>=2.1.0
+numpy>=1.25.0
+scipy>=1.11.0
+
+# Design B only (cloud + signal publishing)
+google-cloud-storage>=2.14.0  # GCS bucket access
+```
+
+### GCP Cost Breakdown (Design B)
+
+| Service | Cost | Notes |
+|---------|------|-------|
+| Cloud Run (min-instances=1) | ~$25-40/month | 6.5 hrs/day, 5 days/week |
+| GCS Bucket | ~$0.50/month | ~1MB/day of trade logs |
+| Cloud Build (deploys) | Free tier | 120 min/day free |
+| **Total** | **~$30-45/month** | Offset by subscriber revenue |
+
+**Break-even**: 1 Basic subscriber at $49/mo covers cloud costs.
 
 ---
 
@@ -904,30 +1271,29 @@ gcloud run deploy trading-signal-api \
 
 ## Advantages Over Pure NinjaScript
 
-| Factor | Pure NinjaScript | Python API Hybrid |
+| Factor | Pure NinjaScript | Python API (Local) |
 |--------|-----------------|-------------------|
 | **Dev speed** | Days to translate each strategy | Already done (existing Python code) |
 | **Backtesting** | NinjaTrader backtester (limited) | Full Python backtest (run_backtest.py) |
 | **Code quality** | C# with limited debugging | Python with full IDE support |
-| **Iteration** | Recompile + restart NT | Deploy in 30 sec, no NT restart |
+| **Iteration** | Recompile + restart NT | Save file, auto-reload, no NT restart |
 | **Version control** | NinjaScript project files | Git-tracked, same as backtest |
 | **Testing** | Manual replay | Automated pytest suite |
 | **Multi-instrument** | Possible but complex | Clean cross_instruments dict |
-| **Latency** | ~0ms (local) | ~50-200ms (network) |
+| **Latency** | ~0ms (in-process) | ~1-5ms (localhost HTTP) |
 | **Reliability** | NT crashes = no trades | API down = no signal = no trade (safe) |
 
-**Latency concern**: 50-200ms round trip is fine for 1-minute bars. You have 60,000ms per bar.
-Even with occasional 500ms spikes, that's <1% of the bar period. The strategies evaluate
-on bar close, so there's no sub-second timing requirement.
+**Latency**: 1-5ms on localhost is negligible for 1-minute bars (60,000ms budget).
+Even on Cloud Run (50-200ms), it's <0.3% of the bar period.
 
 ---
 
 ## Fail-Safe Design
 
-1. **API timeout**: NinjaTrader sets 5-second timeout. If no response, action = "NONE" (no trade)
+1. **API timeout**: NinjaTrader sets 2-second timeout (localhost). If no response, action = "NONE" (no trade)
 2. **API down**: NinjaTrader catches exception, logs error, continues without trading
 3. **Invalid signal**: NinjaTrader validates stop/target before executing
-4. **Network partition**: No signal = no trade. Never trades on stale/missing data.
+4. **Process crash**: `--restart unless-stopped` (Docker) or Task Scheduler auto-restart
 5. **Position mismatch**: NinjaTrader sends current position state; API doesn't assume
 6. **Session reset**: `/session_init` clears all state at 9:25 AM daily
 
@@ -938,7 +1304,7 @@ The design is **fail-safe by default** — any error results in no trading, neve
 ## Implementation Roadmap
 
 ### Phase 1: API Scaffold (1-2 days)
-- Create `api/` package with main.py, session_manager.py, signal_engine.py
+- Create `api/` package with main.py, session_manager.py, signal_engine.py, trade_logger.py
 - Wire existing strategy classes into signal_engine
 - Local testing with `uvicorn api.main:app --reload`
 - Test with historical bar data replayed via curl
@@ -949,18 +1315,23 @@ The design is **fail-safe by default** — any error results in no trading, neve
 - Volumetric bar data extraction (delta, up_vol, down_vol)
 - Test in NinjaTrader Playback mode (replay historical data)
 
-### Phase 3: GCP Deployment (1 day)
-- Dockerfile + requirements.txt
-- gcloud run deploy
-- Authentication (API key in header)
-- Cloud Scheduler for min-instances during market hours
-
-### Phase 4: Paper Trading (1-2 weeks)
-- Run on live market data in NinjaTrader SIM account
+### Phase 3: Design A — Local Paper Trading (1-2 weeks)
+- Start API locally: `uvicorn api.main:app --host 127.0.0.1 --port 8080`
+- NinjaTrader SIM account pointing to `http://localhost:8080`
 - Compare signals to backtest expectations
 - Monitor latency, errors, edge cases
+- Windows Task Scheduler for auto-start at 9:20 AM
 
-### Phase 5: Live Eval (ongoing)
+### Phase 4: Live Eval on Design A (ongoing)
 - Switch to live Tradeify eval account
 - Start with 1 MNQ contract
 - Scale per prop firm plan (Phase 1→2→3 sizing)
+- All local, $0/month
+
+### Phase 5: Design B — Cloud + Signal Publishing (when ready for subscribers)
+- Deploy to GCP Cloud Run with GCS bucket
+- Set DEPLOY_MODE=cloud, configure GCS_BUCKET
+- Add subscriber API key management
+- Build subscriber dashboard (web UI or Discord/Telegram bot)
+- Switch NinjaScript `apiUrl` from localhost to Cloud Run URL
+- Revenue: $49-149/subscriber/month
