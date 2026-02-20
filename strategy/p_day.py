@@ -36,7 +36,8 @@ from config.constants import ACCEPTANCE_MIN_BARS, LONDON_CLOSE, PM_SESSION_START
 PDAY_TARGET_MULT = 1.5
 STOP_VWAP_BUFFER = 0.40  # Stop below VWAP - 40% IB range
 STOP_IB_EDGE_BUFFER = 0.50  # Stop below IB edge - 50% IB range
-STOP_MINIMUM_PTS = 15.0  # Minimum stop distance
+STOP_MINIMUM_RATIO = 0.10  # Minimum stop = 10% of IB range (was 15 pts, ~10% of median IB)
+PRE_DELTA_RATIO = 3.0      # Reject if pre-delta sum < -3.0x IB range (was -500 hardcoded, ~3.2x median IB)
 
 
 class PDayStrategy(StrategyBase):
@@ -144,14 +145,13 @@ class PDayStrategy(StrategyBase):
             if vwap_dist < 0.40 and current_price > vwap and delta > 0:
                 # Order flow momentum check: reject entries where the pullback
                 # is driven by aggressive selling (pre-entry delta strongly negative).
+                # IB-scaled pre-delta momentum check
                 pre_delta_sum = sum(self._delta_history[:-1]) if len(self._delta_history) > 1 else 0
-                if pre_delta_sum < -500:
+                pre_delta_threshold = -self._ib_range * PRE_DELTA_RATIO
+                if pre_delta_sum < pre_delta_threshold:
                     return None
 
-                # --- Order Flow Quality Gate (Deep OF Study findings) ---
-                # Require at least 2 of 3 order flow signals to be positive:
-                # delta_percentile >= 60, imbalance > 1.0, volume_spike >= 1.0
-                # This catches entries where all OF signals are bearish.
+                # Order Flow Quality Gate: 2-of-3 signals must be positive
                 delta_pctl = bar.get('delta_percentile', 50)
                 imbalance = bar.get('imbalance_ratio', 1.0)
                 vol_spike = bar.get('volume_spike', 1.0)
@@ -164,9 +164,10 @@ class PDayStrategy(StrategyBase):
                 if of_quality < 2:
                     return None
 
+                min_stop_dist = self._ib_range * STOP_MINIMUM_RATIO
                 stop = vwap - (self._ib_range * STOP_VWAP_BUFFER)
-                stop = min(stop, current_price - STOP_MINIMUM_PTS)
-                if current_price - stop >= STOP_MINIMUM_PTS:
+                stop = min(stop, current_price - min_stop_dist)
+                if current_price - stop >= min_stop_dist:
                     self._entry_taken = True
                     return Signal(
                         timestamp=bar.get('timestamp', bar.name) if hasattr(bar, 'name') else bar.get('timestamp'),
@@ -208,9 +209,10 @@ class PDayStrategy(StrategyBase):
             if vwap_dist < 0.40 and current_price < vwap and delta < 0:
                 has_volume = bar.get('volume_spike', 1.0) > 1.2
                 if has_volume:  # Extra confirmation for shorts
+                    min_stop_dist = self._ib_range * STOP_MINIMUM_RATIO
                     stop = vwap + (self._ib_range * STOP_VWAP_BUFFER)
-                    stop = max(stop, current_price + STOP_MINIMUM_PTS)
-                    if stop - current_price >= STOP_MINIMUM_PTS:
+                    stop = max(stop, current_price + min_stop_dist)
+                    if stop - current_price >= min_stop_dist:
                         self._entry_taken = True
                         return Signal(
                             timestamp=bar.get('timestamp', bar.name) if hasattr(bar, 'name') else bar.get('timestamp'),

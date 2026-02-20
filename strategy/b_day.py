@@ -47,9 +47,10 @@ from strategy.base import StrategyBase
 from strategy.signal import Signal
 from config.constants import BDAY_COOLDOWN_BARS, BDAY_STOP_IB_BUFFER
 
-# B-Day IB range cap: extremely wide IB (>400 pts NQ) is NOT a true balance day.
-# The target (IB midpoint) becomes unreachable for a fade trade.
-BDAY_MAX_IB_RANGE = 400.0
+# B-Day IB range cap: use rolling 90th percentile instead of hardcoded 400 pts.
+# Extremely wide IB (relative to recent history) is NOT a true balance day.
+BDAY_MAX_IB_PCTL = 90          # Percentile of rolling IB history for cap
+BDAY_MAX_IB_BUFFER = 1.2       # Allow 20% above the percentile
 
 # B-Day last entry time: entries after 14:00 have insufficient time to reach target.
 BDAY_LAST_ENTRY_TIME = _time(14, 0)
@@ -70,6 +71,15 @@ class BDayStrategy(StrategyBase):
         self._ib_low = ib_low
         self._ib_range = ib_range
         self._ib_mid = (ib_high + ib_low) / 2
+
+        # Adaptive IB range cap using rolling history
+        ib_history = session_context.get('ib_range_history', [])
+        if len(ib_history) >= 5:
+            import numpy as _np
+            pctl_val = _np.percentile(ib_history[-20:], BDAY_MAX_IB_PCTL)
+            self._max_ib = pctl_val * BDAY_MAX_IB_BUFFER
+        else:
+            self._max_ib = 400.0  # fallback for first sessions
 
         self._val_fade_taken = False
         self._last_entry_bar = -999
@@ -100,9 +110,9 @@ class BDayStrategy(StrategyBase):
         if bar_time and bar_time >= BDAY_LAST_ENTRY_TIME:
             return None
 
-        # IB range cap: extremely wide IB is not a true balance day.
-        # The target (IB midpoint) becomes unreachable for a fade trade.
-        if self._ib_range > BDAY_MAX_IB_RANGE:
+        # Adaptive IB range cap: extremely wide IB (relative to recent history)
+        # is not a true balance day. Target becomes unreachable.
+        if self._ib_range > self._max_ib:
             return None
 
         # Cooldown

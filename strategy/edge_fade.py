@@ -410,9 +410,9 @@ class EdgeFadeStrategy(StrategyBase):
         if of_quality < 2:
             return None
 
-        # Pre-delta momentum check
+        # Pre-delta momentum check (IB-scaled)
         pre_delta = sum(self._delta_history[:-1]) if len(self._delta_history) > 1 else 0
-        if pre_delta < -800:
+        if pre_delta < -self._ib_range * 0.80:
             return None  # Too much selling pressure
 
         # Compute stop and target

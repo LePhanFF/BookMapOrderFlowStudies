@@ -45,11 +45,11 @@ from strategy.signal import Signal
 # Constants - matching diagnostic_opening_range_smt.py
 OR_BARS = 15                      # First 15 bars = Opening Range (9:30-9:44)
 EOR_BARS = 30                     # First 30 bars = Extended OR (9:30-9:59)
-SWEEP_THRESHOLD_PTS = 20.0        # Level must be within 20 pts to count as sweep
-VWAP_ALIGNED_PTS = 20.0           # Entry must be within 20 pts of VWAP
+SWEEP_THRESHOLD_PTS = 20.0        # Level proximity threshold (absolute - proximity to level, not range-scaled)
+VWAP_ALIGNED_PTS = 20.0           # VWAP proximity threshold (absolute - proximity check)
 OR_STOP_BUFFER = 0.15             # Stop: sweep extreme + 15% of EOR range (ratio-based)
-MIN_RISK_PTS = 5.0                # Minimum risk in points
-MAX_RISK_PTS = 200.0              # Maximum risk in points
+MIN_RISK_RATIO = 0.03             # Minimum risk = 3% of EOR range (was 5 pts)
+MAX_RISK_RATIO = 1.3              # Maximum risk = 1.3x EOR range (was 200 pts)
 DRIVE_THRESHOLD = 0.4             # Opening drive classification threshold (ratio-based)
 
 
@@ -86,10 +86,6 @@ class OpeningRangeReversal(StrategyBase):
         if ib_bars is None or len(ib_bars) < EOR_BARS:
             return
 
-        # Threshold values
-        vwap_threshold = VWAP_ALIGNED_PTS
-        max_risk = MAX_RISK_PTS
-
         # OR = first 15 bars (9:30-9:44)
         or_bars = ib_bars.iloc[:OR_BARS]
         or_high = or_bars['high'].max()
@@ -102,8 +98,13 @@ class OpeningRangeReversal(StrategyBase):
         eor_low = eor_bars['low'].min()
         eor_range = eor_high - eor_low
 
-        if eor_range < 10:
+        if eor_range < 10:  # Minimum EOR range sanity check (noise floor)
             return
+
+        # Proximity thresholds (absolute — level proximity, not range-scaled)
+        # Risk thresholds scaled to EOR range
+        vwap_threshold = VWAP_ALIGNED_PTS
+        max_risk = eor_range * MAX_RISK_RATIO
 
         # Classify opening drive from first 5 bars
         first_5 = ib_bars.iloc[:5]
@@ -143,7 +144,7 @@ class OpeningRangeReversal(StrategyBase):
         if pdl: low_levels.append(pdl)
         if asia_low: low_levels.append(asia_low)
 
-        # Sweep: EOR extreme is near a key level
+        # Sweep: EOR extreme is near a key level (proximity check)
         sweep_threshold = SWEEP_THRESHOLD_PTS
 
         swept_high_level = None
@@ -194,7 +195,7 @@ class OpeningRangeReversal(StrategyBase):
 
                     stop = eor_high + eor_range * OR_STOP_BUFFER
                     risk = stop - price
-                    if risk < MIN_RISK_PTS or risk > max_risk:
+                    if risk < eor_range * MIN_RISK_RATIO or risk > max_risk:
                         continue
                     target = price - 2 * risk
 
@@ -247,7 +248,7 @@ class OpeningRangeReversal(StrategyBase):
 
                     stop = eor_low - eor_range * OR_STOP_BUFFER
                     risk = price - stop
-                    if risk < MIN_RISK_PTS or risk > max_risk:
+                    if risk < eor_range * MIN_RISK_RATIO or risk > max_risk:
                         continue
                     target = price + 2 * risk
 

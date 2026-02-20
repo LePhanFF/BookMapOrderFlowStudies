@@ -390,10 +390,12 @@ class BacktestEngine:
                 if pos.strategy_name not in vwap_breach_exempt:
                     if 'vwap' in bar.index:
                         vwap = bar['vwap']
-                        if pos.direction == 'LONG' and bar['close'] < vwap - VWAP_BREACH_POINTS:
+                        # IB-scaled VWAP breach threshold (7% of IB range)
+                        vwap_breach = ib_range * 0.07 if ib_range > 0 else VWAP_BREACH_POINTS
+                        if pos.direction == 'LONG' and bar['close'] < vwap - vwap_breach:
                             positions_to_close.append((pos, 'VWAP_BREACH_PM', bar['close']))
                             continue
-                        elif pos.direction == 'SHORT' and bar['close'] > vwap + VWAP_BREACH_POINTS:
+                        elif pos.direction == 'SHORT' and bar['close'] > vwap + vwap_breach:
                             positions_to_close.append((pos, 'VWAP_BREACH_PM', bar['close']))
                             continue
 
