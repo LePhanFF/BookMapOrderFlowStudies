@@ -45,12 +45,11 @@ from strategy.signal import Signal
 # Constants - matching diagnostic_opening_range_smt.py
 OR_BARS = 15                      # First 15 bars = Opening Range (9:30-9:44)
 EOR_BARS = 30                     # First 30 bars = Extended OR (9:30-9:59)
-SWEEP_THRESHOLD_ATR = 0.10        # Level must be within 10% of ATR to count as sweep
-VWAP_ALIGNED_ATR = 0.10           # Entry must be within 10% of ATR of VWAP
+SWEEP_THRESHOLD_PTS = 20.0        # Level must be within 20 pts to count as sweep
+VWAP_ALIGNED_PTS = 20.0           # Entry must be within 20 pts of VWAP
 OR_STOP_BUFFER = 0.15             # Stop: sweep extreme + 15% of EOR range (ratio-based)
-MIN_RISK_PTS = 5.0                # Minimum risk in points (microstructure floor, not vol-dependent)
-MAX_RISK_ATR = 1.0                # Maximum risk as ATR multiple
-MIN_EOR_RANGE_ATR = 0.05          # Minimum EOR range as ATR multiple
+MIN_RISK_PTS = 5.0                # Minimum risk in points
+MAX_RISK_PTS = 200.0              # Maximum risk in points
 DRIVE_THRESHOLD = 0.4             # Opening drive classification threshold (ratio-based)
 
 
@@ -87,11 +86,9 @@ class OpeningRangeReversal(StrategyBase):
         if ib_bars is None or len(ib_bars) < EOR_BARS:
             return
 
-        # ATR for adaptive thresholds
-        atr = session_context.get('atr14', 200.0)
-        self._atr = atr
-        vwap_threshold = atr * VWAP_ALIGNED_ATR
-        max_risk = atr * MAX_RISK_ATR
+        # Threshold values
+        vwap_threshold = VWAP_ALIGNED_PTS
+        max_risk = MAX_RISK_PTS
 
         # OR = first 15 bars (9:30-9:44)
         or_bars = ib_bars.iloc[:OR_BARS]
@@ -105,7 +102,7 @@ class OpeningRangeReversal(StrategyBase):
         eor_low = eor_bars['low'].min()
         eor_range = eor_high - eor_low
 
-        if eor_range < atr * MIN_EOR_RANGE_ATR:
+        if eor_range < 10:
             return
 
         # Classify opening drive from first 5 bars
@@ -146,8 +143,8 @@ class OpeningRangeReversal(StrategyBase):
         if pdl: low_levels.append(pdl)
         if asia_low: low_levels.append(asia_low)
 
-        # Sweep: EOR extreme is near a key level (ATR-adaptive threshold)
-        sweep_threshold = atr * SWEEP_THRESHOLD_ATR
+        # Sweep: EOR extreme is near a key level
+        sweep_threshold = SWEEP_THRESHOLD_PTS
 
         swept_high_level = None
         for lvl in high_levels:

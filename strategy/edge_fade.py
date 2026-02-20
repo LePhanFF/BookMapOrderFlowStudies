@@ -45,8 +45,8 @@ from strategy.signal import Signal
 
 # Edge fade constants
 EDGE_FADE_COOLDOWN_BARS = 20        # Bars between entries per model
-EDGE_FADE_MAX_IB_RANGE_ATR = 1.0   # Max IB range as ATR multiple (wider = stop too large)
-EDGE_FADE_MIN_IB_RANGE_ATR = 0.25  # Min IB range as ATR multiple (too narrow = illiquid)
+EDGE_FADE_MAX_IB_RANGE = 200.0     # Max IB range in pts (wider IB = 0-36% WR, stop too large)
+EDGE_FADE_MIN_IB_RANGE = 50.0      # Min IB range in pts (too narrow = illiquid)
 EDGE_FADE_LAST_ENTRY_TIME = _time(13, 30)  # No entries after 13:30 (PM morph kills mean reversion: 0% WR)
 EDGE_FADE_MAX_BEARISH_EXT = 0.3    # Max ext_down as fraction of IB (bearish days = 37% WR)
 
@@ -93,11 +93,8 @@ class EdgeFadeStrategy(StrategyBase):
         self._ib_range = ib_range
         self._ib_mid = (ib_high + ib_low) / 2
 
-        # ATR-adaptive IB range bounds
-        atr = session_context.get('atr14', 200.0)
-        max_ib = atr * EDGE_FADE_MAX_IB_RANGE_ATR
-        min_ib = atr * EDGE_FADE_MIN_IB_RANGE_ATR
-        self._active = min_ib <= ib_range <= max_ib
+        # Disable if IB range is outside valid bounds
+        self._active = EDGE_FADE_MIN_IB_RANGE <= ib_range <= EDGE_FADE_MAX_IB_RANGE
 
         # Track max extension below IBL for bearish day filter
         self._max_ext_down = 0.0

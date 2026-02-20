@@ -23,12 +23,11 @@ import pandas as pd
 from strategy.base import StrategyBase
 from strategy.signal import Signal
 
-IBH_SWEEP_MIN_IB_RATIO = 0.03     # Min sweep above IBH as fraction of IB range
-IBH_SWEEP_PDH_PROXIMITY_ATR = 0.05  # Sweep must reach within 5% of ATR of PDH
-IBH_SWEEP_LARGE_SWEEP_ATR = 0.075   # Large sweep threshold (no PDH required)
+IBH_SWEEP_MIN_PTS = 5.0           # Minimum sweep above IBH in points
+IBH_SWEEP_PDH_PROXIMITY = 10.0    # Sweep must reach within 10 pts of PDH
 IBH_SWEEP_STOP_BUFFER = 0.15
 IBH_SWEEP_LAST_ENTRY = _time(14, 0)
-IBH_SWEEP_MAX_IB_RANGE_ATR = 1.5    # Max IB range as ATR multiple
+IBH_SWEEP_MAX_IB_RANGE = 300.0    # Max IB range in pts
 
 
 class IBHSweepFail(StrategyBase):
@@ -46,13 +45,11 @@ class IBHSweepFail(StrategyBase):
         self._ib_low = ib_low
         self._ib_range = ib_range
         self._ib_mid = (ib_high + ib_low) / 2
-        self._atr = session_context.get('atr14', 200.0)
         # Use actual PDH from overnight computation, fallback to prior session
         self._pdh = session_context.get('pdh') or session_context.get('prior_session_high')
         self._london_high = session_context.get('london_high')
         self._entry_fired = False
-        max_ib = self._atr * IBH_SWEEP_MAX_IB_RANGE_ATR
-        self._active = ib_range > 0 and ib_range <= max_ib
+        self._active = ib_range > 0 and ib_range <= IBH_SWEEP_MAX_IB_RANGE
 
     def on_bar(self, bar: pd.Series, bar_index: int, session_context: dict) -> Optional[Signal]:
         if not self._active or self._entry_fired:
@@ -76,18 +73,15 @@ class IBHSweepFail(StrategyBase):
 
         # Sweep + failure on THIS bar
         sweep_pts = bar['high'] - self._ib_high
-        min_sweep = self._ib_range * IBH_SWEEP_MIN_IB_RATIO
-        if sweep_pts < min_sweep:
+        if sweep_pts < IBH_SWEEP_MIN_PTS:
             return None
 
         # Sweep must reach near PDH (overhead liquidity target)
-        pdh_proximity = self._atr * IBH_SWEEP_PDH_PROXIMITY_ATR
-        large_sweep = self._atr * IBH_SWEEP_LARGE_SWEEP_ATR
         if self._pdh is not None:
-            near_pdh = bar['high'] >= self._pdh - pdh_proximity
+            near_pdh = bar['high'] >= self._pdh - IBH_SWEEP_PDH_PROXIMITY
             if not near_pdh:
                 # Without PDH proximity, require a very large sweep
-                if sweep_pts < large_sweep:
+                if sweep_pts < 15:
                     return None
 
         # Failure: close must be below IBH with rejection wick
