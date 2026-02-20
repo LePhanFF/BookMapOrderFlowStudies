@@ -97,6 +97,8 @@ def main():
                         help='Path for trade log CSV export')
     parser.add_argument('--quiet', '-q', action='store_true',
                         help='Suppress per-session output')
+    parser.add_argument('--max-drawdown', type=float, default=None,
+                        help='Max drawdown before halting (default: $4,000). Use 999999 for no limit.')
     parser.add_argument('--day-analysis', action='store_true',
                         help='Run day type confidence analysis report')
     args = parser.parse_args()
@@ -160,7 +162,10 @@ def main():
         execution = ExecutionModel(instrument, slippage_ticks=slippage)
 
     # --- 6. Build position manager ---
-    position_mgr = PositionManager(account_size=args.account_size)
+    pm_kwargs = {'account_size': args.account_size}
+    if args.max_drawdown is not None:
+        pm_kwargs['max_drawdown'] = args.max_drawdown
+    position_mgr = PositionManager(**pm_kwargs)
 
     # --- 7. Run backtest ---
     engine = BacktestEngine(
