@@ -30,7 +30,7 @@ from pathlib import Path
 import sys
 
 # Add project root to path
-proj_root = Path(__file__).resolve().parent
+proj_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(proj_root))
 
 from data.loader import load_csv

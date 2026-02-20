@@ -1,341 +1,251 @@
 # Order Flow Strategy for Prop Firm Trading
-## Complete Implementation & Documentation
 
-**Status**: ✅ PRODUCTION READY  
-**Strategy**: Dual Order Flow (Evaluation + Funded Modes)  
-**Instrument**: MNQ (Micro E-mini Nasdaq-100)  
-**Platform**: NinjaTrader 8  
-**Target**: TradeDay $150K Evaluation  
-
----
-
-## 🎯 Quick Start
-
-### 1. Install NinjaTrader Scripts
-```bash
-# Copy these files to:
-Documents\NinjaTrader 8\bin\Custom\Strategies\
-
-Files:
-✅ DualOrderFlow_Evaluation.cs    (Pass evaluation fast)
-✅ DualOrderFlow_Funded.cs        (Trade funded accounts)
-```
-
-### 2. Compile
-1. Open NinjaTrader
-2. `Tools` → `Edit NinjaScript` → `Strategy`
-3. Press **F5** to compile
-4. Check for errors
-
-### 3. Trade
-- **Evaluation**: Use `DualOrderFlow_Evaluation`, 31 contracts
-- **Funded**: Use `DualOrderFlow_Funded`, 20 contracts
-- **Timeline**: Pass in 9 days, scale to 5 accounts in 65 days
+**Status**: Production Ready (v14)
+**Portfolio**: 7-Strategy Dalton Playbook + Order Flow Quality Gate
+**Instrument**: MNQ (Micro E-mini Nasdaq-100)
+**Platform**: NinjaTrader 8
+**Target**: Tradeify $150K Select Flex Evaluation
 
 ---
 
-## 📊 Strategy Performance
+## Latest Results (v14 - Feb 19, 2026)
 
-| Metric | Evaluation | Funded |
-|--------|-----------|--------|
-| **Win Rate** | 44.2% | 52.0% |
-| **Expectancy** | 1.52 pts/trade | 2.80 pts/trade |
-| **Trades/Day** | 10.9 | 7.1 |
-| **Daily P&L** | $1,027 | $794 |
-| **Contracts** | 31 | 20 |
-| **Pass Time** | 9 days | N/A |
+| Portfolio | Trades | Win Rate | Expectancy | Net P&L | Max DD | Profit Factor |
+|-----------|--------|----------|------------|---------|--------|---------------|
+| **Intraday (6 strategies)** | 52 | 83% | $264/trade | $13,706 | -$351 | 18.35 |
+| **Opening Range (1 strategy)** | 20 | 80% | $190/trade | $3,807 | -$407 | 6.30 |
+| **COMBINED (7 strategies)** | **72** | **~82%** | **~$243/trade** | **~$17,513** | **-$407** | **~12** |
 
-**Backtest**: 677 trades, 62 days, 90 days of data  
-**Confidence**: 95% CI ±3.7% on win rate
+Annualized estimate: **~$71,200/year** on 1 MNQ contract.
+Backtest: 62 RTH sessions, Nov 18 2025 - Feb 16 2026, MNQ at $2/pt.
 
----
-
-## 📁 File Structure
-
-### Core Code
-```
-├── dual_strategy.py                 # Python backtesting
-├── live_trading_wrapper.py          # Paper/live trading
-├── monitoring_dashboard.py          # Real-time tracking
-├── DualOrderFlow_Evaluation.cs      # NT8 evaluation script
-└── DualOrderFlow_Funded.cs          # NT8 funded script
-```
-
-### Documentation
-```
-├── design-document.md               # Architecture (FINAL)
-├── NINJATRADER_SETUP_GUIDE.md       # Complete setup
-├── NT_STRATEGY_QUICK_REFERENCE.md   # Quick comparison
-├── EVALUATION_FACTORY_SYSTEM.md     # 5-account scaling
-├── DUAL_MODE_STRATEGY.md            # Maniac vs Sniper
-├── RESPONSIBLE_ACCELERATION.md      # Tiered passing
-├── STRATEGY_COMPARISON_SUMMARY.md   # Metrics comparison
-└── FINAL_STRATEGY.md                # Implementation guide
-```
-
-### Archive
-```
-└── archive/
-    ├── research/                    # Early analysis
-    │   ├── CORRECTED_5MIN_RESULTS.md
-    │   ├── SIZING_AND_TIMEFRAME_SPECS.md
-    │   └── WIDER_STOPS_ANALYSIS.md
-    └── old-thinking/                # Discarded approaches
-        ├── backtest_report.md
-        ├── final_strategy_report.md
-        ├── optimized_strategy.md
-        └── roadmap.md
-```
-
-### Prompts
-```
-└── prompts/
-    ├── quant-study.md               # Final study results
-    ├── playbooks.md                 # Dalton reference
-    └── ict.md                       # ICT concepts (unused)
-```
+**Data update**: CSV folder now contains data back to August 2025 (200+ sessions). Re-running backtests against this expanded dataset is the next priority.
 
 ---
 
-## 🎓 Key Findings
+## The 7 Strategies
 
-### What Works ✅
-1. **Pure 1-minute order flow** beats complex filters
-2. **Delta + CVD** is the core edge
-3. **Tight stops** (0.4x ATR) maximize position size
-4. **2:1 R:R** optimal for 44% win rate
-5. **Sequential passing** eliminates correlation risk
+| # | Strategy | Direction | Time | Trades | WR | Exp/Trade | Net P&L |
+|---|----------|-----------|------|--------|-----|-----------|---------|
+| 1 | Trend Day Bull (VWAP pullback) | LONG | 10:30-13:00 | 8 | 75% | $134 | $1,074 |
+| 2 | P-Day VWAP Pullback | LONG | 10:30-13:00 | 8 | 75% | $134 | $1,075 |
+| 3 | B-Day IBL Fade | LONG | 10:30-14:00 | 4 | 100% | $571 | $2,285 |
+| 4 | Edge Fade (optimized) | LONG | 10:30-13:30 | 17 | 94% | $453 | $7,696 |
+| 5 | IBH Sweep+Fail | SHORT | 10:30-14:00 | 4 | 100% | $146 | $582 |
+| 6 | Bear Acceptance Short | SHORT | 10:30-14:00 | 11 | 64% | $90 | $995 |
+| 7 | Opening Range Reversal | BOTH | 9:30-10:30 | 20 | 80% | $190 | $3,807 |
 
-### What Doesn't Work ❌
-1. **HTF filters** during evaluation (too slow)
-2. **Auction market theory** (reduces performance)
-3. **Wider stops** (can't size up enough)
-4. **Simultaneous scaling** (correlation risk)
-
-### Best Strategy
-- **Strategy A**: Imbalance > 85% + Volume > 1.5x + CVD
-- **Strategy B**: Delta > 85% + CVD
-- **Combined**: 44.2% WR, 1.52 pts/trade, pass in 9 days
+Strategies 1-6 run after the Initial Balance (10:30-16:00). Strategy 7 runs during the opening range (9:30-10:30). No time overlap = fully additive.
 
 ---
 
-## 🚀 Evaluation Factory System
+## Key Discovery: Playbook Beats Pure Order Flow
 
-### Sequential Passing (Recommended)
+The original approach used pure 1-minute order flow signals (delta + CVD). The v14 playbook approach uses Dalton Market Profile day-type classification as the primary filter, with order flow as a quality gate.
 
-| Account | Days | Profit | Cumulative |
-|---------|------|--------|------------|
-| Account 1 | 1-9 | $9,243 | $9,243 |
-| Account 2 | 10-19 | $9,243 | $18,486 |
-| Account 3 | 20-33 | $9,000 | $27,486 |
-| Account 4 | 34-48 | $9,000 | $36,486 |
-| Account 5 | 49-65 | $9,000 | $45,486 |
+| Approach | Win Rate | Expectancy | Sharpe |
+|----------|----------|------------|--------|
+| Pure Order Flow (standalone) | 44-56% | $37-84/trade | ~2 |
+| **Playbook + OF Quality Gate** | **80-82%** | **$190-264/trade** | **~19** |
 
-**Total**: 65 days, $45,486 profit, $750 fees  
-**Method**: Pass 1 → Fund 2 → Pass 2 → Fund 3...
-
-### Why Sequential?
-- ✅ No simultaneous blowups
-- ✅ Self-funded (use profits)
-- ✅ Uncorrelated P&L
-- ✅ 5% reset risk vs 30%
+Full comparison: [Order Flow vs Playbook Analysis](docs/reports/order_flow_vs_playbook_comparison.md)
 
 ---
 
-## ⚙️ Strategy Parameters
+## 10 Rules You Must Never Break
 
-### Evaluation Mode (Maniac)
-```python
-Contracts: 31
-Daily Loss: -$1,500
-Max Losses: 5
-Max Trades: 15/day
-Time: 10:00-13:00 ET
-Stop: 0.4x ATR (~6.5 pts)
-Target: 2.0x stop (~13 pts)
-R:R: 2:1
-Max Hold: 8 bars
-```
-
-### Funded Mode (Sniper)
-```python
-Contracts: 20
-Daily Loss: -$800
-Max Losses: 3
-Max Trades: 10/day
-Time: 10:00-13:00 ET
-Stop: 0.4x ATR (~6.5 pts)
-Target: 2.0x stop (~13 pts)
-R:R: 2:1
-Max Hold: 8 bars
-HTF Filters: 5-min CVD + VWAP ✅
-```
+1. **NEVER short on b_day or neutral** (0-14% WR on NQ)
+2. **NEVER enter Edge Fade after 13:30** (0% WR, PM morph kills mean reversion)
+3. **NEVER enter Edge Fade when IB > 200 pts** (0-36% WR on wide IB)
+4. **NEVER enter Edge Fade on bearish days** (ext_down > 0.3x = 37% WR)
+5. **NEVER use FVG as standalone entry on 1-min bars** (16% WR, counter-indicator)
+6. **NEVER use trailing stops on VWAP pullback entries** (reduces P&L 50-80%)
+7. **NEVER use CVDFilter on B-Day trades** (kills entries that naturally have CVD < MA)
+8. **Day type is THE filter** - classify the day FIRST, then pick the strategy
+9. **EOD exit captures the most P&L** for trend/p-day strategies
+10. **Pre-entry delta < -500 on VWAP pullbacks = skip** (aggressive selling)
 
 ---
 
-## 📈 Expected Returns
+## Quick Start
 
-### Month 1: Evaluation Phase
-- Pass 5 accounts sequentially
-- Profit: $45,000
-- Cost: $750 (evaluation fees)
-- Net: $44,250
-
-### Month 2+: Live Funded
-- All 5 accounts in funded mode
-- Daily: $3,970 total ($794 × 5)
-- Monthly: ~$79,400 (20 days)
-- Withdrawal: 50% ($39,700)
-- Compound: 50% ($39,700)
-
-### Year 1 Projection
-- Evaluations: $44,250
-- Live trading: $476,400
-- **Total: ~$520,650**
+1. Copy `ninjatrader/DualOrderFlow_Evaluation.cs` and `ninjatrader/DualOrderFlow_Funded.cs` to `Documents\NinjaTrader 8\bin\Custom\Strategies\`
+2. Compile in NinjaTrader (`Tools` > `Edit NinjaScript` > `Strategy` > F5)
+3. Create MNQ 1-minute chart and add strategy
+4. Full setup: [NinjaTrader Setup Guide](docs/guides/NINJATRADER_SETUP_GUIDE.md)
 
 ---
 
-## 🛠️ Setup Instructions
+## Project Structure
 
-### Prerequisites
-- NinjaTrader 8 (download from ninjatrader.com)
-- Data feed with volumetric/Level 2 data
-- Prop firm account (TradeDay recommended)
-- Computer with 16GB+ RAM
-
-### Step-by-Step
-1. **Install NT8** and connect data feed
-2. **Copy scripts** to Strategies folder
-3. **Compile** (F5 in NinjaScript Editor)
-4. **Create chart**: MNQ, 1-minute
-5. **Add strategy**: Choose Eval or Funded
-6. **Configure**: Set contracts, loss limits
-7. **Test**: Paper trade 1 week
-8. **Go live**: Enable on evaluation account
-
-**Full guide**: See `NINJATRADER_SETUP_GUIDE.md`
-
----
-
-## 🎨 Visual Indicators
-
-### Evaluation Mode
 ```
-⚡ EVALUATION MODE - MANIAC ⚡
-Strategy: Pure 1-Min Order Flow
-Contracts: 31 | WR: 44% | Trades: 11/day
-Session: 10:00-13:00 ET | Pass: 9 days
-```
-
-### Funded Mode
-```
-🎯 FUNDED MODE - SNIPER 🎯
-Strategy: HTF Filtered (5-min CVD + VWAP)
-Contracts: 20 | WR: 52% | Trades: 7/day
-Session: 10:00-13:00 ET | Quality: A+
+BookMapOrderFlowStudies-2/
+|
+|-- ninjatrader/                    # NinjaTrader 8 deployment scripts
+|   |-- DualOrderFlow_Evaluation.cs # NT8 evaluation mode
+|   +-- DualOrderFlow_Funded.cs     # NT8 funded mode
+|
+|-- strategy/                       # Python strategy implementations
+|   |-- dual_strategy.py            # Dual mode backtesting
+|   |-- strategy_5min_proper.py     # 5-min timeframe strategy
+|   |-- base.py                     # Base strategy class
+|   |-- b_day.py, p_day.py, ...     # Dalton day-type strategies
+|   |-- edge_fade.py                # Edge fade strategy
+|   |-- trend_bull.py, trend_bear.py
+|   +-- signal.py                   # Signal generation
+|
+|-- engine/                         # Backtesting engine
+|   |-- backtest.py                 # Core backtest runner
+|   |-- execution.py                # Order execution
+|   |-- position.py                 # Position management
+|   |-- equity.py                   # Equity tracking
+|   +-- trade.py                    # Trade model
+|
+|-- data/                           # Data loading and processing
+|   |-- loader.py                   # CSV data loader
+|   |-- session.py                  # Session boundaries
+|   +-- features.py                 # Feature engineering
+|
+|-- config/                         # Configuration
+|   |-- constants.py                # Strategy parameters
+|   +-- instruments.py              # Instrument specs
+|
+|-- filters/                        # Trade filters
+|   |-- order_flow_filter.py        # Delta/CVD/imbalance filters
+|   |-- time_filter.py              # Session time windows
+|   |-- trend_filter.py             # HTF trend detection
+|   +-- volatility_filter.py        # ATR-based filters
+|
+|-- indicators/                     # Technical indicators
+|   |-- technical.py                # VWAP, ATR, etc.
+|   +-- ict_models.py              # ICT concepts
+|
+|-- profile/                        # Market profile analysis
+|   |-- tpo_profile.py              # TPO profiles
+|   |-- volume_profile.py           # Volume profiles
+|   |-- ib_analysis.py              # Initial balance
+|   +-- dpoc_migration.py           # DPOC tracking
+|
+|-- prop/                           # Prop firm simulation
+|   |-- pipeline.py                 # Multi-account pipeline
+|   |-- account.py                  # Account management
+|   |-- rules.py                    # Prop firm rules
+|   +-- sizer.py                    # Position sizing
+|
+|-- reporting/                      # Output and metrics
+|   |-- metrics.py                  # Performance metrics
+|   |-- comparison.py               # Strategy comparison
+|   |-- day_analyzer.py             # Daily analysis
+|   +-- trade_log.py                # Trade logging
+|
+|-- export/                         # Export tools
+|   +-- ninjatrader.py              # NinjaTrader export
+|
+|-- scripts/                        # Runners and utilities
+|   |-- run_backtest.py             # Single strategy backtest
+|   |-- run_playbook_backtests.py   # Playbook suite runner
+|   |-- run_all_playbook_strategies.py
+|   |-- sim_prop_firm.py            # Prop firm simulation
+|   |-- strategy_report.py          # Generate reports
+|   |-- live_trading_wrapper.py     # Paper/live trading
+|   +-- monitoring_dashboard.py     # Real-time tracking
+|
+|-- diagnostics/                    # Analysis and debugging scripts
+|   |-- diagnostic_full_portfolio_report.py
+|   |-- diagnostic_opening_range_*.py
+|   |-- diagnostic_bearish_day*.py
+|   |-- diagnostic_entry_models.py
+|   +-- ... (25 diagnostic scripts)
+|
+|-- tests/                          # Test suite
+|   |-- test_backtest_engine.py
+|   |-- test_data_loader.py
+|   +-- test_playbook_strategies.py
+|
+|-- docs/                           # Documentation
+|   |-- design/                     # Architecture and system design
+|   |-- guides/                     # Setup and usage guides
+|   |-- reports/                    # Performance reports and analysis
+|   +-- roadmap/                    # Development plans
+|
+|-- research/                       # Strategy research studies
+|   +-- strategy-studies/           # Formal study write-ups
+|
+|-- csv/                            # Market data (Aug 2025 - Feb 2026, 200+ sessions)
+|-- prompts/                        # LLM prompts for analysis
+|-- rockit-framework/               # Rockit analysis framework
+|-- archive/                        # Deprecated code and old analysis
++-- output/                         # Backtest output
 ```
 
 ---
 
-## ⚠️ Risk Management
+## Reports and Analysis
 
-### Built-in Safeguards
-- ✅ Daily loss limits (auto-stop)
-- ✅ Consecutive loss tracking
-- ✅ Max trades per day
-- ✅ Time window restrictions
-- ✅ Automatic OCO orders
+### Current Reports
+| Report | Description |
+|--------|-------------|
+| [v14 Final Report (Feb 19)](docs/reports/2026.02.19_final_report.md) | Complete 7-strategy playbook with entry/exit rules, NinjaTrader automation notes, and performance tables |
+| [Order Flow vs Playbook Comparison](docs/reports/order_flow_vs_playbook_comparison.md) | Why playbook (80% WR) beats pure order flow (44-56% WR) |
 
-### Emergency Stop
-1. Right-click chart → Strategies
-2. Uncheck strategy box
-3. Click Apply
-4. Manually close positions if needed
+### Research Studies
+| Study | Description |
+|-------|-------------|
+| [Master Index](research/strategy-studies/MASTER_INDEX.md) | Comparison of 4 mechanical strategies (OF, ORB, Trend, Mean Reversion) |
+| [Opening Range Breakout](research/strategy-studies/OPENING_RANGE_BREAKOUT_STUDY.md) | ORB strategy analysis for prop firms |
+| [Trend Following Breakout](research/strategy-studies/TREND_FOLLOWING_BREAKOUT_STUDY.md) | Multi-timeframe momentum trading |
+| [Mean Reversion](research/strategy-studies/MEAN_REVERSION_STUDY.md) | Bollinger Band and RSI counter-trend study |
+| [Two Hour Trader](research/strategy-studies/TWO_HOUR_TRADER_STUDY.md) | Options-based mechanical trading (79% WR in live evals) |
 
----
+### Design Documents
+| Document | Description |
+|----------|-------------|
+| [Design Document (v14)](docs/design/design-document.md) | Portfolio architecture for 7-strategy system |
+| [Dual Mode Strategy](docs/design/DUAL_MODE_STRATEGY.md) | Evaluation (Maniac) vs Funded (Sniper) framework |
+| [Dual Strategy System](docs/design/DUAL_STRATEGY_SYSTEM.md) | Tiered Imbalance+Volume+CVD and Delta+CVD approach |
+| [Evaluation Factory](docs/design/EVALUATION_FACTORY_SYSTEM.md) | Sequential evaluation passing and scaling plan |
+| [Final Strategy](docs/design/FINAL_STRATEGY.md) | Complete order flow implementation guide |
+| [Prop Firm Strategy](docs/design/prop_firm_strategy.md) | Tradeify $150K strategy with Dalton + Order Flow |
 
-## 📞 Support & Resources
+### Guides
+| Guide | Description |
+|-------|-------------|
+| [NinjaTrader Setup](docs/guides/NINJATRADER_SETUP_GUIDE.md) | Complete NT8 setup for automated prop firm trading |
+| [Quick Reference](docs/guides/NT_STRATEGY_QUICK_REFERENCE.md) | Dual order flow NinjaTrader script reference |
+| [Automation Guide](docs/guides/AUTOMATION_GUIDE.md) | Automated order entry, NQ vs ES validation |
+| [Enhanced Strategies](docs/guides/ENHANCED_STRATEGIES_GUIDE.md) | Bookmap-style features using OHLCV + delta |
 
-### NinjaTrader
-- Help: `Help` → `NinjaScript Editor Help`
-- Forum: https://ninjatrader.com/support/forum/
-- Docs: https://ninjatrader.com/support/nt8-help/
+### Roadmap
+| Document | Description |
+|----------|-------------|
+| [Automation Architecture](docs/roadmap/AUTOMATION_ARCHITECTURE.md) | NT8 + Python Signal API with local and GCP deployment |
+| [Development Roadmap](docs/roadmap/DEVELOPMENT_ROADMAP.md) | 3-strategy roadmap: trend, mean reversion, options |
+| [Responsible Acceleration](docs/roadmap/RESPONSIBLE_ACCELERATION.md) | Risk management plan for evaluation passing |
 
-### Prop Firm
-- TradeDay: Support portal in dashboard
-- Check rules before trading
-
-### This Project
-- Code issues: Check `trace/` folder in NT8
-- Logic questions: Review documentation
-- Backtest data: See `csv/` folder
-
----
-
-## 📋 Checklist
-
-### Before First Trade
-- [ ] NT8 installed and licensed
-- [ ] Data feed connected (volumetric!)
-- [ ] Both .cs files copied and compiled
-- [ ] Chart created (MNQ 1-min)
-- [ ] Strategy added and configured
-- [ ] Paper traded for 1 week
-- [ ] Verified fills match backtest
-
-### Daily Routine
-- [ ] Check economic calendar
-- [ ] Open NT8 at 9:55 AM
-- [ ] Verify data connection
-- [ ] Enable strategy at 10:00 AM
-- [ ] Monitor first 3 trades
-- [ ] Review P&L at 1:00 PM
-- [ ] Export trade log
+### Archived Reports
+Older reports superseded by the v14 playbook approach are in [`docs/reports/archive/`](docs/reports/archive/).
 
 ---
 
-## 🎯 Success Metrics
+## How to Add New Data
 
-### Short Term (Evaluation)
-- [ ] Pass in 9-12 days
-- [ ] Win rate 40-50%
-- [ ] No rule violations
-- [ ] Build $2,000+ cushion
-
-### Medium Term (First Month)
-- [ ] 5 accounts funded
-- [ ] $45,000 total profit
-- [ ] Zero blowouts
-- [ ] Smooth equity curve
-
-### Long Term (Live Trading)
-- [ ] $15K+ monthly profit
-- [ ] 50%+ win rate
-- [ ] Consistent withdrawals
-- [ ] Growing cushion
+1. Export volumetric bars from NinjaTrader (1-min bars with delta, CVD, imbalance)
+2. Save as CSV in `csv/`: `NQ_Volumetric_1.csv`, `ES_Volumetric_1.csv`, `YM_Volumetric_1.csv`
+3. Required columns: timestamp, session_date, open, high, low, close, volume, vol_ask, vol_bid, vol_delta, cumulative_delta, delta_percentile, imbalance_ratio, volume_spike, vwap, vwap_upper1-3, vwap_lower1-3, ema20, ema50, ema200, rsi14, atr14
+4. Run intraday backtest: `python scripts/run_backtest.py --strategies core`
+5. Run opening range analysis: `python diagnostics/diagnostic_opening_range_v2.py`
 
 ---
 
-## 🏆 Final Notes
+## Prop Firm Evaluation Plan
 
-**This is a complete, production-ready trading system.**
-
-- ✅ Backtested across 90 days
-- ✅ 677 trades analyzed
-- ✅ Statistically significant
-- ✅ Ready for live deployment
-
-**Remember:**
-- Start with evaluation mode
-- Paper trade first
-- Scale gradually
-- Manage risk religiously
-
-**Good luck, trade safe!** 🚀
+- **Profit target**: $9,000 (Tradeify $150K)
+- **Trailing drawdown**: $4,500 (EOD)
+- **Trades to pass**: ~37 trades at $243 avg expectancy
+- **Timeline**: ~4-5 weeks at 1.2 trades/day
+- **Max DD risk**: -$407 = 9% of drawdown allowance
 
 ---
 
-*Repository Version: 2.0*  
-*Last Updated: February 16, 2026*  
-*Status: ✅ PRODUCTION READY*  
-*Ready to deploy*
+*Repository Version: 3.0 (v14 playbook)*
+*Last Updated: February 19, 2026*

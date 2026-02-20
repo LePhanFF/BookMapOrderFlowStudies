@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-project_root = Path(__file__).resolve().parent
+project_root = Path(__file__).resolve().parent.parent
 
 def load_nq_data():
     """Load NQ 1-min bar data from csv/ directory using the project data loader."""

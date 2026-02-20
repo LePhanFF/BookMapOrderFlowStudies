@@ -23,7 +23,7 @@ import numpy as np
 from pathlib import Path
 from datetime import time as dt_time, timedelta
 
-project_root = Path(__file__).resolve().parent
+project_root = Path(__file__).resolve().parent.parent
 
 import sys
 sys.path.insert(0, str(project_root))
