@@ -45,8 +45,8 @@ from strategy.signal import Signal
 
 # Edge fade constants
 EDGE_FADE_COOLDOWN_BARS = 20        # Bars between entries per model
-EDGE_FADE_MAX_IB_RANGE = 200.0     # Max IB range in pts (wider IB = 0-36% WR, stop too large)
-EDGE_FADE_MIN_IB_RANGE = 50.0      # Min IB range in pts (too narrow = illiquid)
+EDGE_FADE_IB_EXPANSION_RATIO = 1.2  # Only trade when IB >= 1.2x rolling avg (expansion = overextension = good mean reversion)
+EDGE_FADE_IB_LOOKBACK = 5           # Rolling window for IB average (sessions)
 EDGE_FADE_LAST_ENTRY_TIME = _time(13, 30)  # No entries after 13:30 (PM morph kills mean reversion: 0% WR)
 EDGE_FADE_MAX_BEARISH_EXT = 0.3    # Max ext_down as fraction of IB (bearish days = 37% WR)
 
@@ -93,8 +93,18 @@ class EdgeFadeStrategy(StrategyBase):
         self._ib_range = ib_range
         self._ib_mid = (ib_high + ib_low) / 2
 
-        # Disable if IB range is outside valid bounds
-        self._active = EDGE_FADE_MIN_IB_RANGE <= ib_range <= EDGE_FADE_MAX_IB_RANGE
+        # Expansion filter: only trade when IB is wider than recent average
+        # Wider IB = overextension = better mean reversion opportunity
+        # Narrow IB = low vol / choppy = poor mean reversion (Aug-Sep regime)
+        ib_history = session_context.get('ib_range_history', [])
+        if len(ib_history) >= EDGE_FADE_IB_LOOKBACK:
+            recent = ib_history[-EDGE_FADE_IB_LOOKBACK:]
+            avg_ib = sum(recent) / len(recent)
+            ib_ratio = ib_range / avg_ib if avg_ib > 0 else 1.0
+            self._active = ib_ratio >= EDGE_FADE_IB_EXPANSION_RATIO
+        else:
+            # Not enough history — allow trading (first few sessions)
+            self._active = True
 
         # Track max extension below IBL for bearish day filter
         self._max_ext_down = 0.0

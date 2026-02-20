@@ -114,6 +114,7 @@ class BacktestEngine:
             print()
 
         prior_session_context = {}  # Tracks prior session info for context
+        ib_range_history = []  # Rolling IB ranges for regime detection
 
         for session_date in sessions:
             session_df = df[df['session_date'] == session_date].copy()
@@ -130,11 +131,16 @@ class BacktestEngine:
 
             # Store prior session data for next session
             last_bar = session_df.iloc[-1]
+            ib_df_tmp = session_df.head(IB_BARS_1MIN)
+            session_ib_range = ib_df_tmp['high'].max() - ib_df_tmp['low'].min()
+            ib_range_history.append(session_ib_range)
+
             prior_session_context = {
                 'prior_close': last_bar['close'],
                 'prior_vwap': last_bar.get('vwap', None),
                 'prior_session_high': session_df['high'].max(),
                 'prior_session_low': session_df['low'].min(),
+                'ib_range_history': list(ib_range_history[-20:]),  # Last 20 sessions
             }
 
             # Record equity snapshot at session end
