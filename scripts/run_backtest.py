@@ -15,7 +15,7 @@ from pathlib import Path
 from datetime import time
 
 # Add project root to path
-project_root = Path(__file__).resolve().parent
+project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
@@ -123,8 +123,8 @@ def main():
     # --- 2. Load data ---
     print(f"\n--- Loading Data ---")
     csv_dir = Path(args.csv_dir) if args.csv_dir else None
-    df = load_csv(csv_file_symbol, csv_dir)
-    df = filter_rth(df)
+    full_df = load_csv(csv_file_symbol, csv_dir)
+    df = filter_rth(full_df)
     df = compute_all_features(df)
 
     # --- 3. Build strategies ---
@@ -171,6 +171,7 @@ def main():
         position_mgr=position_mgr,
         risk_per_trade=args.risk_per_trade,
         max_contracts=args.max_contracts,
+        full_df=full_df,
     )
 
     result = engine.run(df, verbose=not args.quiet)

@@ -33,7 +33,7 @@ import numpy as np
 import pandas as pd
 from collections import defaultdict
 
-project_root = Path(__file__).resolve().parent
+project_root = Path(__file__).resolve().parent.parent
 
 # ============================================================================
 #  ACTUAL TRADE DATA FROM v13 BACKTEST

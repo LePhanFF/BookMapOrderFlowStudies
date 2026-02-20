@@ -75,6 +75,7 @@ class BacktestEngine:
         position_mgr: Optional[PositionManager] = None,
         risk_per_trade: float = DEFAULT_MAX_RISK_PER_TRADE,
         max_contracts: int = DEFAULT_MAX_CONTRACTS,
+        full_df: Optional[pd.DataFrame] = None,
     ):
         self.instrument = instrument
         self.strategies = strategies
@@ -83,6 +84,7 @@ class BacktestEngine:
         self.position_mgr = position_mgr or PositionManager()
         self.risk_per_trade = risk_per_trade
         self.max_contracts = max_contracts
+        self.full_df = full_df  # Full (unfiltered) data for overnight level computation
 
     def run(self, df: pd.DataFrame, verbose: bool = True) -> BacktestResult:
         """Run the backtest on the provided DataFrame."""
@@ -192,6 +194,7 @@ class BacktestEngine:
             'day_type': DayType.NEUTRAL.value,
             'trend_strength': trend_strength.value,
             'session_date': session_str,
+            'ib_bars': ib_df,  # IB bars for OR Reversal strategy
         }
 
         # Add latest indicator values from IB end
@@ -210,6 +213,11 @@ class BacktestEngine:
                 session_context['prior_session_bullish'] = pc > pv
             else:
                 session_context['prior_session_bullish'] = None
+
+        # Add overnight levels from full (unfiltered) data if available
+        if self.full_df is not None:
+            overnight_levels = self._compute_overnight_levels(session_str)
+            session_context.update(overnight_levels)
 
         # --- Phase 3b: Initialize day type confidence scorer ---
         confidence_scorer = DayTypeConfidenceScorer()
@@ -490,6 +498,53 @@ class BacktestEngine:
 
         self.position_mgr.add_position(pos)
         return None  # Trade is not complete yet -- will be closed later
+
+    def _compute_overnight_levels(self, session_str: str) -> dict:
+        """Compute overnight/ETH levels for a session from full (unfiltered) data."""
+        from datetime import timedelta
+        sd = pd.Timestamp(session_str)
+        prev_day = sd - timedelta(days=1)
+        if prev_day.weekday() == 5:
+            prev_day -= timedelta(days=1)
+        elif prev_day.weekday() == 6:
+            prev_day -= timedelta(days=2)
+
+        ts = self.full_df['timestamp']
+        levels = {}
+
+        # Overnight: 18:00 prev day to 9:29 session day
+        on_mask = (ts >= prev_day + timedelta(hours=18)) & (ts < sd + timedelta(hours=9, minutes=30))
+        on_bars = self.full_df[on_mask]
+        if len(on_bars) > 0:
+            levels['overnight_high'] = on_bars['high'].max()
+            levels['overnight_low'] = on_bars['low'].min()
+        else:
+            levels['overnight_high'] = None
+            levels['overnight_low'] = None
+
+        # Asia session: 20:00-00:00 prev day evening
+        asia_mask = (ts >= prev_day + timedelta(hours=20)) & (ts < sd)
+        asia = self.full_df[asia_mask]
+        if len(asia) > 0:
+            levels['asia_high'] = asia['high'].max()
+            levels['asia_low'] = asia['low'].min()
+
+        # London session: 02:00-05:00 session day
+        london_mask = (ts >= sd + timedelta(hours=2)) & (ts < sd + timedelta(hours=5))
+        london = self.full_df[london_mask]
+        if len(london) > 0:
+            levels['london_high'] = london['high'].max()
+            levels['london_low'] = london['low'].min()
+
+        # Prior day RTH
+        prior_rth_mask = (ts >= prev_day + timedelta(hours=9, minutes=30)) & (ts <= prev_day + timedelta(hours=16))
+        prior_rth = self.full_df[prior_rth_mask]
+        if len(prior_rth) > 0:
+            levels['pdh'] = prior_rth['high'].max()
+            levels['pdl'] = prior_rth['low'].min()
+            levels['pdc'] = prior_rth.iloc[-1]['close']
+
+        return levels
 
     def _print_summary(self, result: BacktestResult) -> None:
         """Print backtest summary."""
