@@ -28,7 +28,7 @@ import pandas as pd
 
 from strategy.base import StrategyBase
 from strategy.signal import Signal
-from config.constants import MORPH_TO_TREND_BREAKOUT_POINTS, MORPH_TO_TREND_TARGET_POINTS
+from config.constants import MORPH_TO_TREND_BREAKOUT_RATIO, MORPH_TO_TREND_TARGET_RATIO
 
 
 class MorphToTrendStrategy(StrategyBase):
@@ -65,7 +65,7 @@ class MorphToTrendStrategy(StrategyBase):
         if strength == 'weak':
             return None
 
-        breakout_threshold = MORPH_TO_TREND_BREAKOUT_POINTS
+        breakout_threshold = self._ib_range * MORPH_TO_TREND_BREAKOUT_RATIO
 
         # --- Track consecutive breakout bars ---
         if current_price > self._ib_high + breakout_threshold:
@@ -84,7 +84,7 @@ class MorphToTrendStrategy(StrategyBase):
             # Stop: meaningful distance — at least 50% of IB range below entry
             stop_distance = max(breakout_threshold, self._ib_range * 0.5)
             stop_price = current_price - stop_distance
-            target_price = current_price + MORPH_TO_TREND_TARGET_POINTS
+            target_price = current_price + self._ib_range * MORPH_TO_TREND_TARGET_RATIO
 
             self._entry_taken = True
             return Signal(
@@ -103,7 +103,7 @@ class MorphToTrendStrategy(StrategyBase):
         if self._breakout_bars_bear >= 2:
             stop_distance = max(breakout_threshold, self._ib_range * 0.5)
             stop_price = current_price + stop_distance
-            target_price = current_price - MORPH_TO_TREND_TARGET_POINTS
+            target_price = current_price - self._ib_range * MORPH_TO_TREND_TARGET_RATIO
 
             self._entry_taken = True
             return Signal(

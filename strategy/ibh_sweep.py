@@ -73,9 +73,9 @@ class IBHSweepFail(StrategyBase):
         if day_type != 'b_day':
             return None
 
-        # b_day confidence must be established
+        # b_day confidence must be established (unified: 0.50 for balance strategies)
         b_day_conf = session_context.get('b_day_confidence', 0.0)
-        if b_day_conf < 0.3:
+        if b_day_conf < 0.50:
             return None
 
         # Sweep + failure on THIS bar (IB-scaled thresholds)

@@ -106,7 +106,8 @@ class BearAcceptShort(StrategyBase):
         # Validate risk/reward
         risk = stop_price - current_price
         reward = current_price - target_price
-        if risk <= 5 or reward <= 5:
+        min_dist = max(self._ib_range * 0.03, 5)  # 3% of IB range or 5 pts, whichever is larger
+        if risk <= min_dist or reward <= min_dist:
             return None
 
         self._entry_fired = True

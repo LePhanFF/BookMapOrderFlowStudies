@@ -60,12 +60,14 @@ BDAY_STOP_IB_BUFFER = 0.1      # Stop 10% beyond IB edge
 BDAY_POOR_STRUCTURE_LOOKBACK = 10
 
 # ── Morph Strategy ──────────────────────────────────────────────
-PM_MORPH_BREAKOUT_POINTS = 15   # Min points beyond AM range for PM morph
-MORPH_TO_TREND_BREAKOUT_POINTS = 30  # Min points beyond IB for morph (was 20, too noisy)
-MORPH_TO_TREND_TARGET_POINTS = 150
+# Morph thresholds (IB-scaled ratios, not absolute points)
+PM_MORPH_BREAKOUT_RATIO = 0.10        # Min breakout = 10% of AM range (was 15 pts, ~10% of median IB)
+MORPH_TO_TREND_BREAKOUT_RATIO = 0.20  # Min breakout = 20% of IB range (was 30 pts, ~20% of median IB)
+MORPH_TO_TREND_TARGET_RATIO = 1.0     # Target = 1.0x IB range from entry (was 150 pts, ~1x median IB)
 
 # ── Value Area ──────────────────────────────────────────────────
 VALUE_AREA_PCT = 0.70
 
 # ── VWAP Breach Threshold ──────────────────────────────────────
-VWAP_BREACH_POINTS = 10        # Points below/above VWAP to signal trend failure
+VWAP_BREACH_RATIO = 0.07       # VWAP breach = 7% of IB range (was 10 pts absolute)
+VWAP_BREACH_POINTS = 10        # Legacy fallback for warmup (used when IB range unavailable)

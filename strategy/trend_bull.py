@@ -160,9 +160,9 @@ class TrendDayBull(StrategyBase):
         if strength == 'weak':
             return None
 
-        # Confidence check
+        # Confidence check (unified: 0.40 for trend strategies)
         trend_conf = session_context.get('trend_bull_confidence', 0.0)
-        if trend_conf < 0.375:
+        if trend_conf < 0.40:
             return None
 
         if bar_index - self._last_entry_bar < PYRAMID_COOLDOWN_BARS:
