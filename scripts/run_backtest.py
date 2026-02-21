@@ -33,6 +33,7 @@ from filters.time_filter import TimeFilter
 from filters.volatility_filter import VolatilityFilter
 from filters.trend_filter import TrendFilter
 from filters.order_flow_filter import DeltaFilter, CVDFilter, VolumeFilter
+from filters.strategy_regime_filter import StrategyRegimeFilter
 from reporting.metrics import compute_metrics, print_metrics
 from reporting.trade_log import export_trade_log, print_trade_summary
 from reporting.comparison import (
@@ -45,6 +46,7 @@ from reporting.day_analyzer import analyze_sessions, print_day_analysis
 def build_default_filters():
     """Build the default composable filter chain."""
     return CompositeFilter([
+        StrategyRegimeFilter(),
         TimeFilter(start=time(10, 30), end=time(15, 30)),
         VolatilityFilter(min_atr=5.0, max_atr=80.0),
     ])
@@ -62,6 +64,7 @@ def build_strict_filters():
       - VolumeFilter(spike>=1.0): 12/12 winners pass, 1/2 losers rejected
     """
     return CompositeFilter([
+        StrategyRegimeFilter(),
         TimeFilter(start=time(10, 30), end=time(15, 0)),
         VolatilityFilter(min_atr=8.0, max_atr=60.0),
         DeltaFilter(min_percentile=60.0),
