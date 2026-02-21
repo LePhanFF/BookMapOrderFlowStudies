@@ -49,6 +49,8 @@ class OpenPosition:
         self.bars_held = 0
         self.trailing_stop = stop_price
         self.breakeven_activated = False
+        self.peak_favorable = 0.0  # Track peak MFE in points for R-based trailing
+        self.risk_points = abs(entry_price - stop_price)  # Initial risk for R calculation
 
     def unrealized_pnl_points(self, current_price: float) -> float:
         """Current unrealized P&L in points."""
@@ -79,6 +81,44 @@ class OpenPosition:
             else:
                 self.trailing_stop = min(self.trailing_stop, self.entry_price)
             self.breakeven_activated = True
+
+    def update_peak_favorable(self, bar_high: float, bar_low: float):
+        """Update peak MFE from current bar."""
+        if self.direction == 'LONG':
+            favorable = bar_high - self.entry_price
+        else:
+            favorable = self.entry_price - bar_low
+        self.peak_favorable = max(self.peak_favorable, favorable)
+
+    def trail_by_r_multiple(self, trigger_r: float, trail_r: float):
+        """Trail stop once peak MFE reaches trigger_r * risk, trailing at trail_r * risk from peak.
+
+        For OR Reversal: trigger_r=0.75, trail_r=0.75
+        Once price moves 0.75R in favor, trail stop at peak - 0.75R.
+        """
+        if self.risk_points <= 0:
+            return
+        if self.peak_favorable < trigger_r * self.risk_points:
+            return  # Haven't reached trigger yet
+
+        if self.direction == 'LONG':
+            trail_level = (self.entry_price + self.peak_favorable) - trail_r * self.risk_points
+            self.trailing_stop = max(self.trailing_stop, trail_level)
+        else:
+            trail_level = (self.entry_price - self.peak_favorable) + trail_r * self.risk_points
+            self.trailing_stop = min(self.trailing_stop, trail_level)
+
+    def breakeven_at_r(self, trigger_r: float):
+        """Move to breakeven once peak MFE reaches trigger_r * risk.
+
+        For Edge Fade: trigger_r=0.75
+        """
+        if self.breakeven_activated:
+            return
+        if self.risk_points <= 0:
+            return
+        if self.peak_favorable >= trigger_r * self.risk_points:
+            self.trail_to_breakeven()
 
     def trail_by_session_extreme(self, session_high: float, session_low: float, trail_distance: float):
         """

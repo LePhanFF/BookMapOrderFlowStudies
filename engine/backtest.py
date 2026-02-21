@@ -529,12 +529,24 @@ class BacktestEngine:
         for pos in self.position_mgr.open_positions:
             pos.bars_held += 1
 
+            # Update peak MFE for R-based management
+            pos.update_peak_favorable(bar['high'], bar['low'])
+
             # Trend strategy trailing: trail by 1.0x IB range from session extreme
             # This locks in profit as the trend extends while giving enough room
             if pos.strategy_name in trend_strategies and ib_range > 0:
                 if pos.bars_held >= 20 and pos.unrealized_pnl_points(bar['close']) > ib_range * 0.5:
                     trail_dist = ib_range * 1.0  # trail 1 IB range behind extreme
                     pos.trail_by_session_extreme(session_high, session_low, trail_dist)
+
+            # NOTE: Per-strategy trail/BE management tested (2026-02-21) but REVERTED.
+            # Bar-by-bar study showed Trail@0.75R helps OR Rev and BE@0.75R helps Edge Fade
+            # in 1-contract simulation, but with risk-based contract sizing in the engine,
+            # both changes HURT total P&L ($13,986 vs $19,462 baseline).
+            # Root cause: trail cuts the right tail of big winners, and risk-based sizing
+            # means fewer contracts on high-risk trades (where MFE is highest).
+            # Keep infrastructure (update_peak_favorable, trail_by_r_multiple, breakeven_at_r)
+            # for future use with partial-exit or adaptive management.
 
             # PM Management: trail to breakeven after 1 PM
             # Only trail to BE when profit exceeds a meaningful threshold.
