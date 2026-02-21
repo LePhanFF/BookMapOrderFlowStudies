@@ -52,6 +52,12 @@ from config.constants import BDAY_COOLDOWN_BARS, BDAY_STOP_IB_BUFFER
 BDAY_MAX_IB_PCTL = 90          # Percentile of rolling IB history for cap
 BDAY_MAX_IB_BUFFER = 1.2       # Allow 20% above the percentile
 
+# Regime-aware volatility filter (Walk-Forward Lite):
+# B-Day IBL fades need sufficient IB range for the target (IB mid) to
+# produce meaningful profit. In low-vol regimes (rolling median IB < 150),
+# even "narrow" sessions don't have enough range for viable fades.
+# A/B tested: removes 7 losing trades (+$1,582), zero impact on Nov-Feb.
+
 # B-Day last entry time: entries after 14:00 have insufficient time to reach target.
 BDAY_LAST_ENTRY_TIME = _time(14, 0)
 
@@ -81,6 +87,20 @@ class BDayStrategy(StrategyBase):
         else:
             self._max_ib = 400.0  # fallback for first sessions
 
+        # Regime-aware filter (Walk-Forward Lite):
+        # B-Day IBL fades need sufficient IB range for the target (IB mid) to
+        # produce meaningful profit. In low-vol regimes (Aug-Nov, median IB ~117),
+        # even "narrow" sessions don't have enough range — the fade from IBL to
+        # IB mid is only ~50 pts, which barely covers costs after slippage+commission.
+        # Use two checks:
+        #   1. Regime must not be 'low' volatility (rolling median IB < 130)
+        #   2. IB must be narrow relative to regime (< regime median) — it's a
+        #      balance day, not a micro-trend day
+        self._regime_allows_bday = True  # default: allow (for warmup period)
+        regime_vol = session_context.get('regime_volatility')
+        if regime_vol == 'low':
+            self._regime_allows_bday = False
+
         self._val_fade_taken = False
         self._last_entry_bar = -999
 
@@ -101,6 +121,11 @@ class BDayStrategy(StrategyBase):
         # B-Day confidence check
         b_day_conf = session_context.get('b_day_confidence', 0.0)
         if b_day_conf < 0.5:
+            return None
+
+        # Regime-aware filter: skip B-Day in low-vol regimes or when IB is not
+        # truly narrow relative to recent sessions.
+        if not self._regime_allows_bday:
             return None
 
         # Time gate: B-Day fades need time to develop toward IB midpoint.

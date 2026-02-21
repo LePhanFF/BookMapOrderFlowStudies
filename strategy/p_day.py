@@ -62,12 +62,19 @@ class PDayStrategy(StrategyBase):
         self._pending_dir = None
         self._entry_taken = False
 
+        # Regime gate: P-Day pullbacks need moderate follow-through.
+        # In low-vol (43% WR, -$449), price doesn't extend enough for targets.
+        self._regime_allows = session_context.get('regime_volatility') != 'low'
+
         # Order flow momentum tracking
         self._delta_history = []
 
     def on_bar(self, bar: pd.Series, bar_index: int, session_context: dict) -> Optional[Signal]:
         day_type = session_context.get('day_type', '')
         if day_type not in self.applicable_day_types:
+            return None
+
+        if not self._regime_allows:
             return None
 
         strength = session_context.get('trend_strength', 'weak')

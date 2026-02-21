@@ -102,6 +102,10 @@ class TrendDayBull(StrategyBase):
         else:
             self._compressed_ib = ib_range < 50.0  # fallback for first sessions
 
+        # Regime gate: directional strategies need follow-through which
+        # doesn't exist in low-vol regimes (29% WR in Aug-Sep vs 75% Nov-Feb).
+        self._regime_allows = session_context.get('regime_volatility') != 'low'
+
         # Track recent swing low for stop placement
         self._recent_swing_low = ib_high  # starts at IBH, tracks lowest pullback
 
@@ -109,6 +113,9 @@ class TrendDayBull(StrategyBase):
         self._delta_history = []  # stores last N bars of delta values
 
     def on_bar(self, bar: pd.Series, bar_index: int, session_context: dict) -> Optional[Signal]:
+        if not self._regime_allows:
+            return None
+
         strength = session_context.get('trend_strength', 'weak')
         current_price = bar['close']
         bar_time = session_context.get('bar_time')
