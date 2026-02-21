@@ -45,9 +45,10 @@ from strategy.signal import Signal
 
 # Edge fade constants
 EDGE_FADE_COOLDOWN_BARS = 20        # Bars between entries per model
-EDGE_FADE_MAX_IB_RANGE = 350.0     # Max IB range (too wide = not true balance)
-EDGE_FADE_MIN_IB_RANGE = 50.0      # Min IB range (too narrow = illiquid)
-EDGE_FADE_LAST_ENTRY_TIME = _time(15, 20)  # No entries in last 10 min
+EDGE_FADE_IB_EXPANSION_RATIO = 1.2  # Only trade when IB >= 1.2x rolling avg (expansion = overextension = good mean reversion)
+EDGE_FADE_IB_LOOKBACK = 5           # Rolling window for IB average (sessions)
+EDGE_FADE_LAST_ENTRY_TIME = _time(13, 30)  # No entries after 13:30 (PM morph kills mean reversion: 0% WR)
+EDGE_FADE_MAX_BEARISH_EXT = 0.3    # Max ext_down as fraction of IB (bearish days = 37% WR)
 
 # EDGE_TO_MID parameters
 EDGE_ZONE_PCT = 0.25               # Lower 25% of IB = entry zone
@@ -92,8 +93,21 @@ class EdgeFadeStrategy(StrategyBase):
         self._ib_range = ib_range
         self._ib_mid = (ib_high + ib_low) / 2
 
-        # Disable if IB range is outside valid bounds
-        self._active = EDGE_FADE_MIN_IB_RANGE <= ib_range <= EDGE_FADE_MAX_IB_RANGE
+        # Expansion filter: only trade when IB is wider than recent average
+        # Wider IB = overextension = better mean reversion opportunity
+        # Narrow IB = low vol / choppy = poor mean reversion (Aug-Sep regime)
+        ib_history = session_context.get('ib_range_history', [])
+        if len(ib_history) >= EDGE_FADE_IB_LOOKBACK:
+            recent = ib_history[-EDGE_FADE_IB_LOOKBACK:]
+            avg_ib = sum(recent) / len(recent)
+            ib_ratio = ib_range / avg_ib if avg_ib > 0 else 1.0
+            self._active = ib_ratio >= EDGE_FADE_IB_EXPANSION_RATIO
+        else:
+            # Not enough history — allow trading (first few sessions)
+            self._active = True
+
+        # Track max extension below IBL for bearish day filter
+        self._max_ext_down = 0.0
 
         # Per-model cooldown tracking
         self._last_edge_to_mid_bar = -EDGE_FADE_COOLDOWN_BARS
@@ -131,9 +145,14 @@ class EdgeFadeStrategy(StrategyBase):
         # === ALWAYS track state regardless of day_type ===
         # (breakdown can start on trend_down bars, but reclaim entry fires on b_day/neutral)
 
-        # Track session low
+        # Track session low and bearish extension
         if bar['low'] < self._session_low:
             self._session_low = bar['low']
+        # Use bar low for extension tracking (catches wicks below IBL)
+        if bar['low'] < self._ib_low and self._ib_range > 0:
+            ext_down = (self._ib_low - bar['low']) / self._ib_range
+            if ext_down > self._max_ext_down:
+                self._max_ext_down = ext_down
 
         # Track delta momentum
         self._delta_history.append(delta)
@@ -220,6 +239,10 @@ class EdgeFadeStrategy(StrategyBase):
         # cuts too many trades early, resulting in -$987 net (45% WR) in real backtest.
         # The entry reclaims from below IBL into a zone that's still VWAP-vulnerable.
         # TODO: Re-enable if VWAP breach PM is tuned or if stop/target adjusted.
+
+        # Bearish day filter: skip if ext_down > 0.3x IB (bearish days = 37% WR)
+        if self._max_ext_down >= EDGE_FADE_MAX_BEARISH_EXT:
+            return None
 
         # Day type gate for EDGE_TO_MID (only b_day/neutral)
         day_type = session_context.get('day_type', '')
@@ -387,9 +410,9 @@ class EdgeFadeStrategy(StrategyBase):
         if of_quality < 2:
             return None
 
-        # Pre-delta momentum check
+        # Pre-delta momentum check (IB-scaled)
         pre_delta = sum(self._delta_history[:-1]) if len(self._delta_history) > 1 else 0
-        if pre_delta < -800:
+        if pre_delta < -self._ib_range * 0.80:
             return None  # Too much selling pressure
 
         # Compute stop and target

@@ -10,6 +10,9 @@ from strategy.neutral_day import NeutralDayStrategy
 from strategy.pm_morph import PMMorphStrategy
 from strategy.morph_to_trend import MorphToTrendStrategy
 from strategy.edge_fade import EdgeFadeStrategy
+from strategy.bear_accept import BearAcceptShort
+from strategy.ibh_sweep import IBHSweepFail
+from strategy.or_reversal import OpeningRangeReversal
 
 ALL_STRATEGIES = [
     TrendDayBull,
@@ -22,28 +25,37 @@ ALL_STRATEGIES = [
     PMMorphStrategy,
     MorphToTrendStrategy,
     EdgeFadeStrategy,
+    BearAcceptShort,
+    IBHSweepFail,
+    OpeningRangeReversal,
 ]
 
-# Core strategies with demonstrated positive edge
-# Trend Bear and SuperTrend Bear removed: 25% WR, negative expectancy
-# NQ has strong long bias — short strategies consistently underperform
-# Edge Fade added: fills trade frequency gap (47/62 sessions vs 10/62 for Playbook)
+# v14 Report 7-Strategy Portfolio (matches 2026.02.19-63days_final_report.md)
+# 1. Trend Day Bull     - VWAP pullback on trend_up/p_day (8 trades, 75% WR)
+# 2. P-Day              - VWAP pullback on p_day (8 trades, 75% WR)
+# 3. B-Day IBL Fade     - IBL fade on b_day (4 trades, 100% WR)
+# 4. Edge Fade OPTIMIZED - Mean reversion with 3 filters (17 trades, 94% WR)
+# 5. IBH Sweep+Fail     - IBH sweep fade on b_day (4 trades, 100% WR)
+# 6. Bear Accept Short  - Acceptance short on trend_down (11 trades, 64% WR)
+# 7. Opening Range Rev  - Judas Swing reversal (20 trades, 80% WR)
 CORE_STRATEGIES = [
     TrendDayBull,
-    SuperTrendBull,
     PDayStrategy,
     BDayStrategy,
     EdgeFadeStrategy,
+    IBHSweepFail,
+    BearAcceptShort,
+    OpeningRangeReversal,
 ]
 
 
 def get_all_strategies():
-    """Instantiate all 9 Dalton playbook strategies."""
+    """Instantiate all Dalton playbook strategies."""
     return [cls() for cls in ALL_STRATEGIES]
 
 
 def get_core_strategies():
-    """Instantiate only strategies with demonstrated positive edge."""
+    """Instantiate the v14 7-strategy portfolio."""
     return [cls() for cls in CORE_STRATEGIES]
 
 

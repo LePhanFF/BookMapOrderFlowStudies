@@ -38,6 +38,11 @@ Neutral Day:
   [x] Multiple HVN (high volume nodes)
   [x] Rotational probes repaired
   [x] Flat DPOC, low ATR
+
+TPO/Volume Profile/DPOC data is passed through session_context by the engine
+(computed by profile adapters). This data is available for strategies to use
+directly but does NOT modify the base confidence scores, which are calibrated
+to work with the existing strategy thresholds.
 """
 
 from dataclasses import dataclass, field
@@ -134,7 +139,7 @@ class DayTypeConfidenceScorer:
         self._price_bins: Dict[int, int] = {}  # bin -> bar count
 
     def on_session_start(self, ib_high: float, ib_low: float, ib_range: float,
-                         atr: float = 0.0):
+                         atr: float = 0.0, tpo_data: dict = None):
         """Initialize for a new session."""
         self._reset()
         self._ib_high = ib_high
@@ -144,8 +149,10 @@ class DayTypeConfidenceScorer:
         self._atr = atr if atr > 0 else ib_range * 2  # fallback
         self._session_high = ib_high
         self._session_low = ib_low
+        # tpo_data accepted for API compatibility but not used in scoring
 
-    def update(self, bar: pd.Series, bar_index: int) -> DayTypeConfidence:
+    def update(self, bar: pd.Series, bar_index: int,
+               tpo_data: dict = None) -> DayTypeConfidence:
         """
         Update confidence scores with a new bar.
         Returns the current confidence assessment.
@@ -289,7 +296,8 @@ class DayTypeConfidenceScorer:
         p_bull_checks = {}
         p_bull_checks['moderate_ext'] = 0.3 <= self._max_extension_up <= 1.5
         p_bull_checks['skew_bull'] = pct_above_mid > 0.55
-        p_bull_checks['some_inside_time'] = self._bars_inside_ib / self._total_bars > 0.1 if self._total_bars > 0 else False
+        pct_inside = self._bars_inside_ib / self._total_bars if self._total_bars > 0 else 0
+        p_bull_checks['some_inside_time'] = pct_inside > 0.1
         p_bull_checks['not_extreme_otf'] = self._max_otf_up < 8  # not a full trend
         p_bull_checks['measured_range'] = session_range < self._atr * 1.5
 
@@ -300,7 +308,7 @@ class DayTypeConfidenceScorer:
         p_bear_checks = {}
         p_bear_checks['moderate_ext'] = 0.3 <= self._max_extension_down <= 1.5
         p_bear_checks['skew_bear'] = pct_below_mid > 0.55
-        p_bear_checks['some_inside_time'] = self._bars_inside_ib / self._total_bars > 0.1 if self._total_bars > 0 else False
+        p_bear_checks['some_inside_time'] = pct_inside > 0.1
         p_bear_checks['not_extreme_otf'] = self._max_otf_down < 8
         p_bear_checks['measured_range'] = session_range < self._atr * 1.5
 
@@ -310,7 +318,6 @@ class DayTypeConfidenceScorer:
         # === B-Day ===
         b_day_checks = {}
         b_day_checks['weak_ext'] = max(self._max_extension_up, self._max_extension_down) < 0.5
-        pct_inside = self._bars_inside_ib / self._total_bars if self._total_bars > 0 else 0
         b_day_checks['mostly_inside'] = pct_inside > 0.4
         b_day_checks['narrow_range'] = session_range < self._ib_range * 1.8
         b_day_checks['no_otf'] = max(self._max_otf_up, self._max_otf_down) < 4

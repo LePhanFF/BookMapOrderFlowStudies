@@ -33,6 +33,25 @@ from strategy.day_type import (
 )
 from strategy.day_confidence import DayTypeConfidenceScorer
 
+# Profile adapters (TPO, Volume, DPOC) — optional, graceful fallback
+try:
+    from profile.tpo_profile import TPOProfileAdapter
+    from profile.volume_profile import VolumeProfileAdapter
+    from profile.dpoc_migration import DPOCMigrationAdapter
+    _PROFILE_AVAILABLE = True
+except ImportError:
+    _PROFILE_AVAILABLE = False
+
+# How often to update TPO/DPOC during bar loop (every 30 bars = ~30 min)
+_PROFILE_UPDATE_INTERVAL = 30
+
+# TPO-based day type classifier
+try:
+    from engine.tpo_classifier import classify_session_tpo
+    _TPO_CLASSIFIER_AVAILABLE = True
+except ImportError:
+    _TPO_CLASSIFIER_AVAILABLE = False
+
 
 @dataclass
 class BacktestResult:
@@ -75,6 +94,7 @@ class BacktestEngine:
         position_mgr: Optional[PositionManager] = None,
         risk_per_trade: float = DEFAULT_MAX_RISK_PER_TRADE,
         max_contracts: int = DEFAULT_MAX_CONTRACTS,
+        full_df: Optional[pd.DataFrame] = None,
     ):
         self.instrument = instrument
         self.strategies = strategies
@@ -83,6 +103,15 @@ class BacktestEngine:
         self.position_mgr = position_mgr or PositionManager()
         self.risk_per_trade = risk_per_trade
         self.max_contracts = max_contracts
+        self.full_df = full_df  # Full (unfiltered) data for overnight level computation
+
+        # Initialize profile adapters if available
+        self._tpo_adapter = None
+        self._volume_adapter = None
+        self._dpoc_adapter = None
+        if _PROFILE_AVAILABLE:
+            self._tpo_adapter = TPOProfileAdapter()
+            self._dpoc_adapter = DPOCMigrationAdapter()
 
     def run(self, df: pd.DataFrame, verbose: bool = True) -> BacktestResult:
         """Run the backtest on the provided DataFrame."""
@@ -112,6 +141,18 @@ class BacktestEngine:
             print()
 
         prior_session_context = {}  # Tracks prior session info for context
+        ib_range_history = []  # Rolling IB ranges for regime detection
+        strategy_trade_history = []  # Rolling trade outcomes for WR lookback
+
+        # Initialize VolumeProfileAdapter with full RTH dataset
+        if _PROFILE_AVAILABLE and self._volume_adapter is None:
+            try:
+                df_for_vp = df.copy()
+                if 'timestamp' in df_for_vp.columns and not isinstance(df_for_vp.index, pd.DatetimeIndex):
+                    df_for_vp = df_for_vp.set_index('timestamp')
+                self._volume_adapter = VolumeProfileAdapter(df_for_vp)
+            except Exception:
+                self._volume_adapter = None
 
         for session_date in sessions:
             session_df = df[df['session_date'] == session_date].copy()
@@ -128,12 +169,50 @@ class BacktestEngine:
 
             # Store prior session data for next session
             last_bar = session_df.iloc[-1]
+            ib_df_tmp = session_df.head(IB_BARS_1MIN)
+            session_ib_range = ib_df_tmp['high'].max() - ib_df_tmp['low'].min()
+            ib_range_history.append(session_ib_range)
+
+            # Track trade outcomes for per-strategy rolling WR
+            session_trades = [t for t in result.trades if t.session_date == session_str]
+            for t in session_trades:
+                strategy_trade_history.append({
+                    'strategy': t.strategy_name,
+                    'net_pnl': t.net_pnl,
+                    'session': session_str,
+                })
+
+            # Compute rolling regime stats from IB history
+            regime_stats = self._compute_regime_stats(
+                ib_range_history, strategy_trade_history)
+
             prior_session_context = {
                 'prior_close': last_bar['close'],
                 'prior_vwap': last_bar.get('vwap', None),
                 'prior_session_high': session_df['high'].max(),
                 'prior_session_low': session_df['low'].min(),
+                'ib_range_history': list(ib_range_history[-20:]),  # Last 20 sessions
             }
+            prior_session_context.update(regime_stats)
+
+            # Compute prior-day TPO/VP levels for next session's inside-day detection
+            if self._volume_adapter is not None:
+                try:
+                    vp_levels = self._volume_adapter.get_session_levels(session_df, "15:59")
+                    prior_session_context['prior_vp_poc'] = vp_levels.get('vp_poc')
+                    prior_session_context['prior_vp_vah'] = vp_levels.get('vp_vah')
+                    prior_session_context['prior_vp_val'] = vp_levels.get('vp_val')
+                except Exception:
+                    pass
+            if self._tpo_adapter is not None:
+                try:
+                    tpo_signals = self._tpo_adapter.get_session_signals(session_df, "15:59")
+                    prior_session_context['prior_tpo_poc'] = tpo_signals.get('tpo_poc')
+                    prior_session_context['prior_tpo_vah'] = tpo_signals.get('tpo_vah')
+                    prior_session_context['prior_tpo_val'] = tpo_signals.get('tpo_val')
+                    prior_session_context['prior_tpo_shape'] = tpo_signals.get('tpo_shape')
+                except Exception:
+                    pass
 
             # Record equity snapshot at session end
             result.equity_curve.record(
@@ -192,6 +271,7 @@ class BacktestEngine:
             'day_type': DayType.NEUTRAL.value,
             'trend_strength': trend_strength.value,
             'session_date': session_str,
+            'ib_bars': ib_df,  # IB bars for OR Reversal strategy
         }
 
         # Add latest indicator values from IB end
@@ -211,10 +291,70 @@ class BacktestEngine:
             else:
                 session_context['prior_session_bullish'] = None
 
-        # --- Phase 3b: Initialize day type confidence scorer ---
+        # Add overnight levels from full (unfiltered) data if available
+        if self.full_df is not None:
+            overnight_levels = self._compute_overnight_levels(session_str)
+            session_context.update(overnight_levels)
+
+        # --- Phase 3b: Inside-day detection (current IB within prior day's value area) ---
+        prior_vah = session_context.get('prior_vp_vah') or session_context.get('prior_tpo_vah')
+        prior_val = session_context.get('prior_vp_val') or session_context.get('prior_tpo_val')
+        prior_vp_poc = session_context.get('prior_vp_poc') or session_context.get('prior_tpo_poc')
+        if prior_vah is not None and prior_val is not None:
+            # Inside day: IB fits within prior day's value area
+            session_context['inside_day'] = (ib_high <= prior_vah and ib_low >= prior_val)
+            # VA relationship: where did we open relative to prior VA?
+            if ib_mid > prior_vah:
+                session_context['va_relationship'] = 'above_va'
+            elif ib_mid < prior_val:
+                session_context['va_relationship'] = 'below_va'
+            else:
+                session_context['va_relationship'] = 'inside_va'
+            session_context['prior_va_high'] = prior_vah
+            session_context['prior_va_low'] = prior_val
+            if prior_vp_poc is not None:
+                session_context['prior_va_poc'] = prior_vp_poc
+        else:
+            session_context['inside_day'] = None
+            session_context['va_relationship'] = None
+
+        # --- Phase 3c: Compute TPO profile at IB end (initial shape + structure) ---
+        if self._tpo_adapter is not None:
+            try:
+                prior_day_dict = None
+                if prior_vp_poc is not None:
+                    prior_day_dict = {
+                        'poc': prior_vp_poc,
+                        'vah': prior_vah, 'val': prior_val,
+                        'high': session_context.get('prior_session_high'),
+                        'low': session_context.get('prior_session_low'),
+                    }
+                tpo_signals = self._tpo_adapter.get_session_signals(
+                    ib_df, "10:29", prior_day=prior_day_dict)
+                session_context.update(tpo_signals)
+            except Exception:
+                pass
+
+        # --- Phase 3c2: TPO-based day type classification at IB end ---
+        if _TPO_CLASSIFIER_AVAILABLE:
+            try:
+                tpo_class = classify_session_tpo(ib_df, "10:29", ib_high, ib_low)
+                session_context['tpo_shape'] = tpo_class.shape
+                session_context['tpo_shape_30min'] = tpo_class.shape_30min
+                session_context['tpo_day_type_hint'] = tpo_class.day_type_hint
+                session_context['tpo_directional_bias'] = tpo_class.directional_bias
+                session_context['tpo_skewness'] = tpo_class.skewness
+                session_context['tpo_va_width_ratio'] = tpo_class.va_width_ratio
+                session_context['tpo_poc_location'] = tpo_class.poc_location
+                session_context['tpo_hvn_count'] = tpo_class.hvn_count
+            except Exception:
+                pass
+
+        # --- Phase 3d: Initialize day type confidence scorer ---
         confidence_scorer = DayTypeConfidenceScorer()
         atr = session_context.get('atr14', 0.0)
-        confidence_scorer.on_session_start(ib_high, ib_low, ib_range, atr)
+        confidence_scorer.on_session_start(ib_high, ib_low, ib_range, atr,
+                                           tpo_data=session_context)
 
         # --- Phase 4: Notify strategies ---
         active_strategies = []
@@ -269,8 +409,43 @@ class BacktestEngine:
             if 'vwap' in bar.index:
                 session_context['vwap'] = bar['vwap']
 
-            # 5a2: Update day type confidence scorer
-            day_confidence = confidence_scorer.update(bar, bar_idx)
+            # 5a2: Periodic TPO/DPOC update (every 30 bars ≈ 30 min)
+            if bar_idx > 0 and bar_idx % _PROFILE_UPDATE_INTERVAL == 0:
+                bars_so_far = session_df.iloc[:IB_BARS_1MIN + bar_idx + 1]
+                bar_time_str = bar_time.strftime('%H:%M') if bar_time else '15:59'
+                if self._tpo_adapter is not None:
+                    try:
+                        tpo_signals = self._tpo_adapter.get_session_signals(
+                            bars_so_far, bar_time_str)
+                        session_context.update(tpo_signals)
+                    except Exception:
+                        pass
+                if self._dpoc_adapter is not None:
+                    try:
+                        dpoc_signals = self._dpoc_adapter.get_migration_signals(
+                            bars_so_far, bar_time_str,
+                            atr14=session_context.get('atr14'),
+                            current_close=current_price)
+                        session_context.update(dpoc_signals)
+                    except Exception:
+                        pass
+                if _TPO_CLASSIFIER_AVAILABLE:
+                    try:
+                        tpo_class = classify_session_tpo(
+                            bars_so_far, bar_time_str, ib_high, ib_low)
+                        session_context['tpo_shape'] = tpo_class.shape
+                        session_context['tpo_shape_30min'] = tpo_class.shape_30min
+                        session_context['tpo_day_type_hint'] = tpo_class.day_type_hint
+                        session_context['tpo_directional_bias'] = tpo_class.directional_bias
+                        session_context['tpo_skewness'] = tpo_class.skewness
+                        session_context['tpo_va_width_ratio'] = tpo_class.va_width_ratio
+                        session_context['tpo_poc_location'] = tpo_class.poc_location
+                        session_context['tpo_hvn_count'] = tpo_class.hvn_count
+                    except Exception:
+                        pass
+
+            # 5a3: Update day type confidence scorer
+            day_confidence = confidence_scorer.update(bar, bar_idx, tpo_data=session_context)
             session_context['day_confidence'] = day_confidence
             session_context['trend_bull_confidence'] = day_confidence.trend_bull
             session_context['trend_bear_confidence'] = day_confidence.trend_bear
@@ -376,10 +551,12 @@ class BacktestEngine:
                 if pos.strategy_name not in vwap_breach_exempt:
                     if 'vwap' in bar.index:
                         vwap = bar['vwap']
-                        if pos.direction == 'LONG' and bar['close'] < vwap - VWAP_BREACH_POINTS:
+                        # IB-scaled VWAP breach threshold (7% of IB range)
+                        vwap_breach = ib_range * 0.07 if ib_range > 0 else VWAP_BREACH_POINTS
+                        if pos.direction == 'LONG' and bar['close'] < vwap - vwap_breach:
                             positions_to_close.append((pos, 'VWAP_BREACH_PM', bar['close']))
                             continue
-                        elif pos.direction == 'SHORT' and bar['close'] > vwap + VWAP_BREACH_POINTS:
+                        elif pos.direction == 'SHORT' and bar['close'] > vwap + vwap_breach:
                             positions_to_close.append((pos, 'VWAP_BREACH_PM', bar['close']))
                             continue
 
@@ -490,6 +667,111 @@ class BacktestEngine:
 
         self.position_mgr.add_position(pos)
         return None  # Trade is not complete yet -- will be closed later
+
+    def _compute_regime_stats(
+        self, ib_range_history: list, strategy_trade_history: list,
+    ) -> dict:
+        """
+        Compute rolling regime statistics from recent session history.
+
+        Walk-Forward Lite: use the last 20 sessions to characterize the
+        current volatility regime and per-strategy recent performance.
+        Strategies can use these stats to adapt thresholds dynamically.
+        """
+        stats = {}
+        lookback = 20
+
+        if len(ib_range_history) >= 5:
+            recent_ib = ib_range_history[-lookback:]
+            stats['regime_ib_median'] = float(np.median(recent_ib))
+            stats['regime_ib_mean'] = float(np.mean(recent_ib))
+            stats['regime_ib_std'] = float(np.std(recent_ib))
+            stats['regime_ib_p25'] = float(np.percentile(recent_ib, 25))
+            stats['regime_ib_p75'] = float(np.percentile(recent_ib, 75))
+
+            # Classify regime: low_vol if median IB < 150, high_vol if > 250
+            # These are NQ-specific thresholds based on diagnostic analysis:
+            # Aug-Nov median 117 (low), Nov-Feb median 197 (normal-high)
+            # B-Day IBL fades need ~80+ pts of IB for viable target (IB mid).
+            # Low-vol threshold at 150 catches extended low-vol transitions.
+            median_ib = stats['regime_ib_median']
+            if median_ib < 150:
+                stats['regime_volatility'] = 'low'
+            elif median_ib < 250:
+                stats['regime_volatility'] = 'normal'
+            else:
+                stats['regime_volatility'] = 'high'
+        else:
+            stats['regime_ib_median'] = None
+            stats['regime_ib_mean'] = None
+            stats['regime_ib_std'] = None
+            stats['regime_ib_p25'] = None
+            stats['regime_ib_p75'] = None
+            stats['regime_volatility'] = None
+
+        # Per-strategy rolling WR (last 20 trades per strategy)
+        if strategy_trade_history:
+            strat_wr = {}
+            # Group by strategy, take last 20 trades each
+            by_strat = {}
+            for t in strategy_trade_history:
+                by_strat.setdefault(t['strategy'], []).append(t)
+            for sname, trades in by_strat.items():
+                recent = trades[-20:]
+                wins = sum(1 for t in recent if t['net_pnl'] > 0)
+                strat_wr[sname] = wins / len(recent) if recent else 0.0
+            stats['regime_strategy_wr'] = strat_wr
+        else:
+            stats['regime_strategy_wr'] = {}
+
+        return stats
+
+    def _compute_overnight_levels(self, session_str: str) -> dict:
+        """Compute overnight/ETH levels for a session from full (unfiltered) data."""
+        from datetime import timedelta
+        sd = pd.Timestamp(session_str)
+        prev_day = sd - timedelta(days=1)
+        if prev_day.weekday() == 5:
+            prev_day -= timedelta(days=1)
+        elif prev_day.weekday() == 6:
+            prev_day -= timedelta(days=2)
+
+        ts = self.full_df['timestamp']
+        levels = {}
+
+        # Overnight: 18:00 prev day to 9:29 session day
+        on_mask = (ts >= prev_day + timedelta(hours=18)) & (ts < sd + timedelta(hours=9, minutes=30))
+        on_bars = self.full_df[on_mask]
+        if len(on_bars) > 0:
+            levels['overnight_high'] = on_bars['high'].max()
+            levels['overnight_low'] = on_bars['low'].min()
+        else:
+            levels['overnight_high'] = None
+            levels['overnight_low'] = None
+
+        # Asia session: 20:00-00:00 prev day evening
+        asia_mask = (ts >= prev_day + timedelta(hours=20)) & (ts < sd)
+        asia = self.full_df[asia_mask]
+        if len(asia) > 0:
+            levels['asia_high'] = asia['high'].max()
+            levels['asia_low'] = asia['low'].min()
+
+        # London session: 02:00-05:00 session day
+        london_mask = (ts >= sd + timedelta(hours=2)) & (ts < sd + timedelta(hours=5))
+        london = self.full_df[london_mask]
+        if len(london) > 0:
+            levels['london_high'] = london['high'].max()
+            levels['london_low'] = london['low'].min()
+
+        # Prior day RTH
+        prior_rth_mask = (ts >= prev_day + timedelta(hours=9, minutes=30)) & (ts <= prev_day + timedelta(hours=16))
+        prior_rth = self.full_df[prior_rth_mask]
+        if len(prior_rth) > 0:
+            levels['pdh'] = prior_rth['high'].max()
+            levels['pdl'] = prior_rth['low'].min()
+            levels['pdc'] = prior_rth.iloc[-1]['close']
+
+        return levels
 
     def _print_summary(self, result: BacktestResult) -> None:
         """Print backtest summary."""
