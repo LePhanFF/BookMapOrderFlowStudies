@@ -46,7 +46,7 @@ from strategy.signal import Signal
 # Edge fade constants
 EDGE_FADE_COOLDOWN_BARS = 20        # Bars between entries per model
 EDGE_FADE_IB_EXPANSION_RATIO = 1.2  # Only trade when IB >= 1.2x rolling avg (expansion = overextension = good mean reversion)
-EDGE_FADE_IB_LOOKBACK = 5           # Rolling window for IB average (sessions)
+EDGE_FADE_IB_LOOKBACK = 5           # Rolling window for IB average (responsive to recent regime)
 EDGE_FADE_LAST_ENTRY_TIME = _time(13, 30)  # No entries after 13:30 (PM morph kills mean reversion: 0% WR)
 EDGE_FADE_MAX_BEARISH_EXT = 0.3    # Max ext_down as fraction of IB (bearish days = 37% WR)
 

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from config.constants import (
     IB_BARS_1MIN, RTH_START, RTH_END, PM_SESSION_START, EOD_CUTOFF,
     DEFAULT_MAX_RISK_PER_TRADE, DEFAULT_MAX_CONTRACTS,
-    VWAP_BREACH_POINTS,
+    VWAP_BREACH_RATIO, VWAP_BREACH_POINTS,
 )
 from config.instruments import InstrumentSpec, get_instrument
 from engine.trade import Trade
@@ -551,8 +551,8 @@ class BacktestEngine:
                 if pos.strategy_name not in vwap_breach_exempt:
                     if 'vwap' in bar.index:
                         vwap = bar['vwap']
-                        # IB-scaled VWAP breach threshold (7% of IB range)
-                        vwap_breach = ib_range * 0.07 if ib_range > 0 else VWAP_BREACH_POINTS
+                        # IB-scaled VWAP breach threshold
+                        vwap_breach = ib_range * VWAP_BREACH_RATIO if ib_range > 0 else VWAP_BREACH_POINTS
                         if pos.direction == 'LONG' and bar['close'] < vwap - vwap_breach:
                             positions_to_close.append((pos, 'VWAP_BREACH_PM', bar['close']))
                             continue
@@ -689,11 +689,12 @@ class BacktestEngine:
             stats['regime_ib_p25'] = float(np.percentile(recent_ib, 25))
             stats['regime_ib_p75'] = float(np.percentile(recent_ib, 75))
 
-            # Classify regime: low_vol if median IB < 150, high_vol if > 250
-            # These are NQ-specific thresholds based on diagnostic analysis:
-            # Aug-Nov median 117 (low), Nov-Feb median 197 (normal-high)
-            # B-Day IBL fades need ~80+ pts of IB for viable target (IB mid).
-            # Low-vol threshold at 150 catches extended low-vol transitions.
+            # Classify regime: low_vol if median IB < 150, high_vol if > 250.
+            # These are NQ/MNQ-specific thresholds -- directional strategies
+            # need ~80+ pts of IB for viable targets (IB mid). 150 is the
+            # minimum viable IB median. Validated: 140-150 produce identical
+            # results (plateau), confirming robustness.
+            # NOTE: For other instruments, scale by tick_value ratio or recalibrate.
             median_ib = stats['regime_ib_median']
             if median_ib < 150:
                 stats['regime_volatility'] = 'low'

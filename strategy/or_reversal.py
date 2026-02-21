@@ -45,8 +45,8 @@ from strategy.signal import Signal
 # Constants - matching diagnostic_opening_range_smt.py
 OR_BARS = 15                      # First 15 bars = Opening Range (9:30-9:44)
 EOR_BARS = 30                     # First 30 bars = Extended OR (9:30-9:59)
-SWEEP_THRESHOLD_PTS = 20.0        # Level proximity threshold (absolute - proximity to level, not range-scaled)
-VWAP_ALIGNED_PTS = 20.0           # VWAP proximity threshold (absolute - proximity check)
+SWEEP_THRESHOLD_RATIO = 0.17      # Level proximity = 17% of EOR range (~20 pts at median 119 EOR)
+VWAP_ALIGNED_RATIO = 0.17         # VWAP proximity = 17% of EOR range (~20 pts at median 119 EOR)
 OR_STOP_BUFFER = 0.15             # Stop: sweep extreme + 15% of EOR range (ratio-based)
 MIN_RISK_RATIO = 0.03             # Minimum risk = 3% of EOR range (was 5 pts)
 MAX_RISK_RATIO = 1.3              # Maximum risk = 1.3x EOR range (was 200 pts)
@@ -98,12 +98,12 @@ class OpeningRangeReversal(StrategyBase):
         eor_low = eor_bars['low'].min()
         eor_range = eor_high - eor_low
 
-        if eor_range < 10:  # Minimum EOR range sanity check (noise floor)
-            return
+        if eor_range < ib_range * 0.05 if ib_range > 0 else eor_range < 10:
+            return  # Minimum EOR range sanity check (scaled to IB)
 
-        # Proximity thresholds (absolute — level proximity, not range-scaled)
-        # Risk thresholds scaled to EOR range
-        vwap_threshold = VWAP_ALIGNED_PTS
+        # Proximity thresholds scaled to EOR range
+        sweep_threshold = eor_range * SWEEP_THRESHOLD_RATIO
+        vwap_threshold = eor_range * VWAP_ALIGNED_RATIO
         max_risk = eor_range * MAX_RISK_RATIO
 
         # Classify opening drive from first 5 bars
@@ -144,8 +144,7 @@ class OpeningRangeReversal(StrategyBase):
         if pdl: low_levels.append(pdl)
         if asia_low: low_levels.append(asia_low)
 
-        # Sweep: EOR extreme is near a key level (proximity check)
-        sweep_threshold = SWEEP_THRESHOLD_PTS
+        # Sweep: EOR extreme is near a key level (proximity check, already computed above)
 
         swept_high_level = None
         for lvl in high_levels:
