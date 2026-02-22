@@ -192,4 +192,9 @@ def compute_all_features(df: pd.DataFrame) -> pd.DataFrame:
     df = compute_ib_width_features(df)
     print("  IB width + C-period features computed")
 
+    # Prior day Value Area (for 80% Rule / 80P strategy)
+    from indicators.value_area import add_prior_va_features
+    df = add_prior_va_features(df)
+    print("  Prior day Value Area features computed")
+
     return df

@@ -16,6 +16,7 @@ from strategy.liquidity_sweep import LiquiditySweep
 from strategy.mean_reversion_vwap import MeanReversionVWAP
 from strategy.ema_trend_follow import EMATrendFollow
 from strategy.orb_enhanced import ORBEnhanced
+from strategy.eighty_percent_rule import EightyPercentRule
 
 ALL_STRATEGIES = [
     TrendDayBull,
@@ -33,6 +34,7 @@ ALL_STRATEGIES = [
     MeanReversionVWAP,
     EMATrendFollow,
     ORBEnhanced,
+    EightyPercentRule,
 ]
 
 # Core strategies with demonstrated positive edge

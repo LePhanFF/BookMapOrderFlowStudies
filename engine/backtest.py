@@ -210,6 +210,10 @@ class BacktestEngine:
             'ext_1_5_high', 'ext_1_5_low',
             'ext_2_0_high', 'ext_2_0_low',
             'ext_3_0_high', 'ext_3_0_low',
+            # Prior day Value Area (for 80P strategy)
+            'prior_va_poc', 'prior_va_vah', 'prior_va_val',
+            'prior_va_width', 'prior_va_high', 'prior_va_low',
+            'open_vs_va',
         ]
         for col in ib_width_cols:
             if col in last_ib.index:
@@ -364,6 +368,10 @@ class BacktestEngine:
                            'Super Trend Bull', 'Super Trend Bear',
                            'Morph to Trend')
 
+        # 80P is mean-reversion to VA — exempt from VWAP breach PM exit
+        # and trend trailing. Its stop/target handle exits.
+        mean_reversion_strategies = ('80P Rule',)
+
         for pos in self.position_mgr.open_positions:
             pos.bars_held += 1
 
@@ -384,9 +392,10 @@ class BacktestEngine:
                     pos.trail_to_breakeven()
 
                 # VWAP breach in PM = trend failure
-                # Only apply to non-trend strategies (PM Morph, P-Day, B-Day).
+                # Only apply to non-trend and non-mean-reversion strategies.
                 # Trend day entries with acceptance hold through PM; their stop handles exits.
-                if pos.strategy_name not in trend_strategies:
+                # 80P mean-reversion trades target VA traverse, not VWAP alignment.
+                if pos.strategy_name not in trend_strategies and pos.strategy_name not in mean_reversion_strategies:
                     if 'vwap' in bar.index:
                         vwap = bar['vwap']
                         if pos.direction == 'LONG' and bar['close'] < vwap - VWAP_BREACH_POINTS:
