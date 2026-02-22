@@ -13,6 +13,7 @@ from strategy.edge_fade import EdgeFadeStrategy
 from strategy.bear_accept import BearAcceptShort
 from strategy.ibh_sweep import IBHSweepFail
 from strategy.or_reversal import OpeningRangeReversal
+from strategy.ib_retest import IBRetestStrategy
 
 ALL_STRATEGIES = [
     TrendDayBull,
@@ -28,6 +29,7 @@ ALL_STRATEGIES = [
     BearAcceptShort,
     IBHSweepFail,
     OpeningRangeReversal,
+    IBRetestStrategy,
 ]
 
 # v14 Report 7-Strategy Portfolio (matches 2026.02.19-63days_final_report.md)
@@ -46,6 +48,7 @@ CORE_STRATEGIES = [
     IBHSweepFail,
     BearAcceptShort,
     OpeningRangeReversal,
+    IBRetestStrategy,
 ]
 
 

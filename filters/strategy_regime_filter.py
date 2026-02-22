@@ -28,6 +28,7 @@ STRATEGY_ALLOWED_REGIMES = {
     'Trend Day Bull':    [],                    # Loses in all regimes
     'P-Day':             [],                    # Loses in all regimes
     'IBH Sweep+Fail':    [],                    # Loses in all regimes (1 trade)
+    'IB Retest':         ['med', 'normal'],     # 100-249 IB range; HIGH bull side fails
 }
 
 # IB range breakpoints (NQ/MNQ points)

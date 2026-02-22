@@ -784,6 +784,16 @@ class BacktestEngine:
             levels['pdl'] = prior_rth['low'].min()
             levels['pdc'] = prior_rth.iloc[-1]['close']
 
+        # Weekly context: prior 5 trading days RTH high/low
+        week_start = sd - timedelta(days=7)
+        weekly_mask = (ts >= week_start + timedelta(hours=9, minutes=30)) & \
+                      (ts < sd + timedelta(hours=9, minutes=30)) & \
+                      (ts.dt.dayofweek < 5)
+        weekly_bars = self.full_df[weekly_mask]
+        if len(weekly_bars) > 0:
+            levels['weekly_high'] = weekly_bars['high'].max()
+            levels['weekly_low'] = weekly_bars['low'].min()
+
         return levels
 
     def _print_summary(self, result: BacktestResult) -> None:
