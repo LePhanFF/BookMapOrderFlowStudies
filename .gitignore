@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# Large CSV data files (unzipped from csv/*.zip)
+csv/*.csv
