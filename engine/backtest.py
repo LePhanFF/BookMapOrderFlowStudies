@@ -200,6 +200,23 @@ class BacktestEngine:
             if col in last_ib.index:
                 session_context[col] = last_ib[col]
 
+        # Add IB width classification features (from data pipeline)
+        ib_width_cols = [
+            'ib_width_class', 'ib_atr_ratio',
+            'a_period_high', 'a_period_low', 'a_period_range',
+            'b_period_high', 'b_period_low', 'b_period_range',
+            'c_period_bias', 'is_nr4', 'is_nr7',
+            'ext_1_0_high', 'ext_1_0_low',
+            'ext_1_5_high', 'ext_1_5_low',
+            'ext_2_0_high', 'ext_2_0_low',
+            'ext_3_0_high', 'ext_3_0_low',
+        ]
+        for col in ib_width_cols:
+            if col in last_ib.index:
+                val = last_ib[col]
+                if not pd.isna(val) if not isinstance(val, str) else val is not None:
+                    session_context[col] = val
+
         # Add prior session context
         if prior_session_context:
             session_context.update(prior_session_context)

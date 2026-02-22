@@ -171,7 +171,7 @@ def compute_day_type(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_all_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute all features: order flow, IB, day type, and ICT models."""
+    """Compute all features: order flow, IB, day type, ICT models, and IB width."""
     print("Computing features...")
 
     df = compute_order_flow_features(df)
@@ -186,5 +186,10 @@ def compute_all_features(df: pd.DataFrame) -> pd.DataFrame:
     # ICT entry model features (FVG, IFVG, BPR, 15-min FVG)
     from indicators.ict_models import add_ict_features
     df = add_ict_features(df)
+
+    # IB Width classification + C-period rule + extension targets
+    from indicators.ib_width import compute_ib_width_features
+    df = compute_ib_width_features(df)
+    print("  IB width + C-period features computed")
 
     return df
