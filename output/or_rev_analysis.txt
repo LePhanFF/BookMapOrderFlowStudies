@@ -1,0 +1,307 @@
+================================================================================
+  OR REVERSAL DEEP ANALYSIS - LAST 90 DAYS
+================================================================================
+
+[1] Running OR Rev backtest on full dataset...
+Loaded NQ: 355,767 rows
+  Date range: 2025-02-20 to 2026-02-23
+  Sessions: 260
+  RTH filter: 99,905 / 355,767 rows (28.1%)
+Computing features...
+  Order flow features computed
+  IB features computed
+  Day types computed
+  Computing FVG/IFVG/BPR features...
+  Computing 15-min FVG features...
+  Total trades: 56
+  Cutoff date: 2025-11-25
+  Recent sessions (last 90 days): 63
+  Recent OR Rev trades: 17
+
+[2] Running per-session diagnostics...
+
+================================================================================
+  SECTION A: ALL OR REV TRADES (LAST 90 DAYS)
+================================================================================
+
+        Date   Dir      Entry       Stop     Target  W/L        P&L   Exit      Swept      Drive   Delta    CVD_E    CVD_X    EOR     IB   Risk
+-----------------------------------------------------------------------------------------------------------------------------------------------------------
+2025-11-28 00:00:00  LONG   25637.25   25574.60   25762.55    ?        N/A   FILT   ASIA_LOW   DRIVE_UP      57       36     -130   91.0   91.0   62.7
+2025-12-01 00:00:00  LONG   25535.25   25424.21   25757.32    W  $  242.26    EOD     ON_LOW   DRIVE_UP     248      491       56  170.2  179.8  111.0
+2025-12-03 00:00:00  LONG   25787.75   25661.80   26039.65    W  $  298.76    EOD     ON_LOW   ROTATION    -348     1072     -233  108.0  144.5  126.0
+2025-12-09 00:00:00  LONG   25892.00   25807.22   26061.55    W  $  239.52    EOD        PDL   ROTATION     108      -57     -412   93.5  110.0   84.8
+2025-12-11 00:00:00 SHORT   25849.00   25917.79   25711.43    L  $   -6.48 VWAP_B   LDN_HIGH DRIVE_DOWN    -303     -282       21  250.2  263.8   68.8
+2025-12-22 00:00:00 SHORT   25726.25   25800.88   25577.00    W  $   14.52 VWAP_B    ON_HIGH DRIVE_DOWN    -500     -620      236  122.5  122.5   74.6
+2025-12-24 00:00:00  LONG   25806.25   25776.97   25864.80    ?        N/A   FILT    LDN_LOW   ROTATION      11      -46      -57   43.5   56.8   29.3
+2025-12-26 00:00:00 SHORT   25896.25   25933.86   25821.03    W  $   48.80 VWAP_B    ON_HIGH   ROTATION    -222     -347      200   70.8  101.0   37.6
+2025-12-29 00:00:00 SHORT   25739.75   25845.96   25527.32    L  $   -2.74   STOP   LDN_HIGH   ROTATION      83    -1126      -60  154.8  157.2  106.2
+2025-12-30 00:00:00  LONG   25718.25   25669.67   25815.40    L  $  -24.96 VWAP_B     ON_LOW   DRIVE_UP     227      463      467  100.5  100.5   48.6
+2026-01-02 00:00:00  LONG   25707.75   25599.92   25923.40    L  $ -218.89   STOP    LDN_LOW   ROTATION    -310      724     -387  165.5  346.5  107.8
+2026-01-13 00:00:00 SHORT   25965.25   26062.30   25771.15    W  $  544.52    EOD    ON_HIGH   ROTATION    -153      333      931  112.0  230.8   97.0
+2026-01-16 00:00:00 SHORT   25845.25   25900.31   25735.12    W  $  651.03 TARGET    ON_HIGH   ROTATION    -360    -1325     -965  148.8  223.8   55.1
+2026-02-09 00:00:00  LONG   25087.50   24933.55   25395.40    W  $  612.56 TARGET     ON_LOW   ROTATION     283     -507     -839  233.0  298.5  154.0
+2026-02-11 00:00:00 SHORT   25352.00   25477.58   25100.85    W  $  499.06 TARGET    ON_HIGH   ROTATION    -133     -799       38  170.5  407.0  125.6
+2026-02-12 00:00:00 SHORT   25354.00   25397.83   25266.35    W  $  688.24 TARGET   LDN_HIGH   ROTATION     -88     -622     -634  190.5  222.8   43.8
+2026-02-13 00:00:00  LONG   24716.00   24579.89   24988.22    W  $  541.21 TARGET     ON_LOW   ROTATION     164      580     -117  270.8  287.8  136.1
+2026-02-19 00:00:00  LONG   24871.75   24728.45   25158.35    L  $ -186.74 VWAP_B        PDL   ROTATION     243      340     -748  157.0  193.5  143.3
+2026-02-20 00:00:00  LONG   24850.75   24654.90   25242.45    W  $  335.76    EOD     ON_LOW   DRIVE_UP     453     1310      181  279.0  404.5  195.8
+
+================================================================================
+  SECTION B: SESSIONS WHERE OR REV DID NOT FIRE (LAST 90 DAYS)
+================================================================================
+
+Skip Reason Summary:
+                             NO_SWEEP:  16 sessions (36.4%)
+                         FADE_BLOCKED:  13 sessions (29.5%)
+                    NO_VWAP_ALIGNMENT:   7 sessions (15.9%)
+             NO_REVERSAL_ABOVE_OR_MID:   4 sessions (9.1%)
+             NO_REVERSAL_BELOW_OR_MID:   3 sessions (6.8%)
+            NO_DELTA_CVD_CONFIRMATION:   1 sessions (2.3%)
+
+        Date                         Skip Reason    Dir      Drive   Hi Swept   Lo Swept     IB    EOR  Regime
+------------------------------------------------------------------------------------------------------------------------
+2025-11-25 00:00:00                            NO_SWEEP      -   ROTATION          -          -    278    278    high
+2025-11-26 00:00:00                            NO_SWEEP      -   ROTATION          -          -    146     99     med
+2025-11-27 00:00:00            NO_REVERSAL_ABOVE_OR_MID   LONG   DRIVE_UP          -     ON_LOW     31     31     low
+2025-12-02 00:00:00                            NO_SWEEP      -   ROTATION          -          -    184    142  normal
+2025-12-04 00:00:00           NO_DELTA_CVD_CONFIRMATION  SHORT DRIVE_DOWN    ON_HIGH          -    192    173  normal
+2025-12-05 00:00:00                            NO_SWEEP      -   DRIVE_UP          -          -    194    130  normal
+2025-12-08 00:00:00                        FADE_BLOCKED  SHORT   DRIVE_UP        PDH     ON_LOW    204    139  normal
+2025-12-10 00:00:00                        FADE_BLOCKED   LONG DRIVE_DOWN          -        PDL    105    105     med
+2025-12-12 00:00:00                            NO_SWEEP      -   ROTATION          -          -    295    118    high
+2025-12-15 00:00:00                        FADE_BLOCKED   LONG DRIVE_DOWN    ON_HIGH    LDN_LOW    364    200    high
+2025-12-16 00:00:00                        FADE_BLOCKED  SHORT   DRIVE_UP    ON_HIGH          -    230    187  normal
+2025-12-17 00:00:00            NO_REVERSAL_ABOVE_OR_MID   LONG   ROTATION        PDH     ON_LOW    202    202  normal
+2025-12-18 00:00:00                            NO_SWEEP      -   ROTATION          -          -    176    168  normal
+2025-12-19 00:00:00                            NO_SWEEP      -   DRIVE_UP          -          -    246    219  normal
+2025-12-23 00:00:00                        FADE_BLOCKED  SHORT   DRIVE_UP    ON_HIGH        PDL    123    113     med
+2025-12-31 00:00:00                        FADE_BLOCKED   LONG DRIVE_DOWN          -   ASIA_LOW    124    110     med
+2026-01-05 00:00:00                            NO_SWEEP      -   ROTATION          -          -    145    134     med
+2026-01-06 00:00:00                            NO_SWEEP      -   DRIVE_UP          -          -    171    153  normal
+2026-01-07 00:00:00                   NO_VWAP_ALIGNMENT   LONG   ROTATION          -   ASIA_LOW    109    109     med
+2026-01-08 00:00:00                   NO_VWAP_ALIGNMENT  SHORT DRIVE_DOWN   LDN_HIGH          -    234    206  normal
+2026-01-09 00:00:00                        FADE_BLOCKED   LONG DRIVE_DOWN        PDH    LDN_LOW    245    142  normal
+2026-01-12 00:00:00                   NO_VWAP_ALIGNMENT   LONG   DRIVE_UP          -   ASIA_LOW    200    190  normal
+2026-01-14 00:00:00                            NO_SWEEP      -   ROTATION          -          -    260    197    high
+2026-01-15 00:00:00                   NO_VWAP_ALIGNMENT  SHORT DRIVE_DOWN    ON_HIGH          -    111    110     med
+2026-01-19 00:00:00                            NO_SWEEP      - DRIVE_DOWN          -          -    108     81     med
+2026-01-20 00:00:00                   NO_VWAP_ALIGNMENT   LONG   DRIVE_UP          -        PDL    144    144     med
+2026-01-21 00:00:00                        FADE_BLOCKED   LONG DRIVE_DOWN          -    LDN_LOW    259    212    high
+2026-01-22 00:00:00                        FADE_BLOCKED   LONG DRIVE_DOWN    ON_HIGH   ASIA_LOW    195    178  normal
+2026-01-23 00:00:00                            NO_SWEEP      -   ROTATION          -          -    201     96  normal
+2026-01-26 00:00:00            NO_REVERSAL_BELOW_OR_MID  SHORT   ROTATION        PDH          -    182    149  normal
+2026-01-27 00:00:00            NO_REVERSAL_BELOW_OR_MID  SHORT DRIVE_DOWN    ON_HIGH   ASIA_LOW    158    139  normal
+2026-01-28 00:00:00                            NO_SWEEP      -   ROTATION          -          -     96     87     low
+2026-01-29 00:00:00                            NO_SWEEP      - DRIVE_DOWN          -          -    457    292    high
+2026-01-30 00:00:00                        FADE_BLOCKED  SHORT   DRIVE_UP  ASIA_HIGH          -    134    126     med
+2026-02-02 00:00:00                   NO_VWAP_ALIGNMENT   LONG   DRIVE_UP          -        PDL    385    272    high
+2026-02-03 00:00:00                   NO_VWAP_ALIGNMENT  SHORT DRIVE_DOWN        PDH          -    482    316    high
+2026-02-04 00:00:00                        FADE_BLOCKED   LONG DRIVE_DOWN          -        PDL    282    199    high
+2026-02-05 00:00:00                            NO_SWEEP      - DRIVE_DOWN          -          -    411    309    high
+2026-02-06 00:00:00                        FADE_BLOCKED  SHORT   DRIVE_UP        PDH          -    283    283    high
+2026-02-10 00:00:00                        FADE_BLOCKED   LONG DRIVE_DOWN   LDN_HIGH     ON_LOW    192    154  normal
+2026-02-16 00:00:00                            NO_SWEEP      -   ROTATION          -          -    105     90     med
+2026-02-17 00:00:00            NO_REVERSAL_ABOVE_OR_MID   LONG   DRIVE_UP  ASIA_HIGH     ON_LOW    354    322    high
+2026-02-18 00:00:00            NO_REVERSAL_BELOW_OR_MID  SHORT   ROTATION    ON_HIGH          -    322    206    high
+2026-02-23 00:00:00            NO_REVERSAL_ABOVE_OR_MID   LONG   DRIVE_UP    ON_HIGH    LDN_LOW    200    182  normal
+
+================================================================================
+  SECTION C: LOSER DEEP DIVE
+================================================================================
+
+Recent trades: 17 (12W / 5L)
+Win rate: 70.6%
+Total P&L: $4,276.43
+
+--- Loser Details ---
+
+  2025-12-11 00:00:00 | SHORT | P&L: $-6.48 | Exit: VWAP_BREACH_PM
+    Entry: 25848.75 | Stop: 25917.79 | Target: 25711.43
+    Risk: 68.8 pts | EOR range: 250.2 | IB range: 263.8
+    Swept: LDN_HIGH at 25880.25 | Depth: 30.2 pts
+    Drive: DRIVE_DOWN (pct: -0.926)
+    Delta: -303 | CVD entry: -282 | CVD extreme: 21
+    CVD divergence: True
+    LOSS FACTORS: LATE_EXIT (VWAP_BREACH_PM)
+
+  2025-12-29 00:00:00 | SHORT | P&L: $-2.74 | Exit: STOP
+    Entry: 25739.50 | Stop: 25739.50 | Target: 25527.32
+    Risk: 106.2 pts | EOR range: 154.8 | IB range: 157.2
+    Swept: LDN_HIGH at 25822.75 | Depth: -3.8 pts
+    Drive: ROTATION (pct: 0.178)
+    Delta: 83 | CVD entry: -1126 | CVD extreme: -60
+    CVD divergence: True
+    LOSS FACTORS: SHALLOW_SWEEP (-2.4% of EOR, -3.8 pts) | WEAK_DELTA (83)
+
+  2025-12-30 00:00:00 | LONG | P&L: $-24.96 | Exit: VWAP_BREACH_PM
+    Entry: 25718.50 | Stop: 25669.67 | Target: 25815.40
+    Risk: 48.6 pts | EOR range: 100.5 | IB range: 100.5
+    Swept: ON_LOW at 25684.75 | Depth: 10.5 pts
+    Drive: DRIVE_UP (pct: 0.547)
+    Delta: 227 | CVD entry: 463 | CVD extreme: 467
+    CVD divergence: False
+    LOSS FACTORS: LATE_EXIT (VWAP_BREACH_PM)
+
+  2026-01-02 00:00:00 | LONG | P&L: $-218.89 | Exit: STOP
+    Entry: 25708.00 | Stop: 25599.92 | Target: 25923.40
+    Risk: 107.8 pts | EOR range: 165.5 | IB range: 346.5
+    Swept: LDN_LOW at 25624.75 | Depth: -13.5 pts
+    Drive: ROTATION (pct: -0.347)
+    Delta: -310 | CVD entry: 724 | CVD extreme: -387
+    CVD divergence: True
+    LOSS FACTORS: SHALLOW_SWEEP (-8.2% of EOR, -13.5 pts) | WEAK_DELTA (-310)
+
+  2026-02-19 00:00:00 | LONG | P&L: $-186.74 | Exit: VWAP_BREACH_PM
+    Entry: 24872.00 | Stop: 24728.45 | Target: 25158.35
+    Risk: 143.3 pts | EOR range: 157.0 | IB range: 193.5
+    Swept: PDL at 24752.00 | Depth: -11.0 pts
+    Drive: ROTATION (pct: 0.201)
+    Delta: 243 | CVD entry: 340 | CVD extreme: -748
+    CVD divergence: True
+    LOSS FACTORS: SHALLOW_SWEEP (-7.0% of EOR, -11.0 pts) | LATE_EXIT (VWAP_BREACH_PM)
+
+================================================================================
+  SECTION D: WINNER vs LOSER PATTERN ANALYSIS
+================================================================================
+
+--- D1: IB Range Distribution ---
+   WINNERS: n= 12 | IB mean= 227.7 med= 223.2 min= 101.0 max= 407.0
+    LOSERS: n=  5 | IB mean= 212.3 med= 193.5 min= 100.5 max= 346.5
+       ALL: n= 17 | IB mean= 223.2 med= 222.8 min= 100.5 max= 407.0
+
+  IB Regime Breakdown:
+        med:   5 trades,  80.0% WR, $  576.64 net
+     normal:   6 trades,  66.7% WR, $1,936.57 net
+       high:   6 trades,  66.7% WR, $1,763.22 net
+
+--- D2: Drive Strength (drive_pct) ---
+   WINNERS: mean= 0.051 med= 0.052 min=-0.696 max= 0.668
+    LOSERS: mean=-0.069 med= 0.178 min=-0.926 max= 0.547
+
+  Drive Type Breakdown:
+        DRIVE_UP:   3 trades,  66.7% WR, $  553.06 net
+      DRIVE_DOWN:   2 trades,  50.0% WR, $    8.04 net
+        ROTATION:  12 trades,  75.0% WR, $3,715.33 net
+
+--- D3: Sweep Depth ---
+   WINNERS: mean=  10.4 med=  12.6 min= -16.0 max=  41.8
+    LOSERS: mean=   2.5 med=  -3.8 min= -13.5 max=  30.2
+
+  Sweep Depth as % of EOR Range:
+   WINNERS: mean=  5.7% med=  7.2% min= -9.4% max= 17.0%
+    LOSERS: mean=  1.0% med= -2.4% min= -8.2% max= 12.1%
+
+--- D4: Swept Level Name ---
+        ON_LOW:   6 trades,  83.3% WR, $2,005.59 net
+           PDL:   2 trades,  50.0% WR, $   52.78 net
+      LDN_HIGH:   3 trades,  33.3% WR, $  679.02 net
+       ON_HIGH:   5 trades, 100.0% WR, $1,757.93 net
+       LDN_LOW:   1 trades,   0.0% WR, $ -218.89 net
+
+--- D5: Delta Magnitude at Entry ---
+   WINNERS: mean=   -45.7 med=  -110.5 min=  -500.0 max=   453.0
+    LOSERS: mean=   -12.0 med=    83.0 min=  -310.0 max=   243.0
+
+  Abs Delta Buckets:
+        <100:   2 trades,  50.0% WR, $  685.50 net
+     100-300:   9 trades,  77.8% WR, $2,516.23 net
+     300-600:   6 trades,  66.7% WR, $1,074.70 net
+
+--- D6: CVD Divergence ---
+   WINNERS: CVD change mean=    88.9 med=   172.0
+    LOSERS: CVD change mean=   165.2 med=    -4.0
+
+--- D7: Entry Bar Index (earlier = better?) ---
+   WINNERS: mean=  5.0 med=  5.0 min=    1 max=   13
+    LOSERS: mean= 11.6 med= 13.0 min=    1 max=   26
+
+--- D8: Day of Week ---
+        Monday:   4 trades,  75.0% WR, $  866.60 net
+       Tuesday:   3 trades,  66.7% WR, $  759.08 net
+     Wednesday:   2 trades, 100.0% WR, $  797.82 net
+      Thursday:   3 trades,  33.3% WR, $  495.02 net
+        Friday:   5 trades,  80.0% WR, $1,357.91 net
+
+--- D9: Direction Breakdown ---
+   SHORT:   8 trades,  75.0% WR, $2,436.95 net, avg R= 0.75
+    +   DRIVE_DOWN:   2 trades,  50.0% WR, $    8.04
+    +     ROTATION:   6 trades,  83.3% WR, $2,428.91
+    LONG:   9 trades,  66.7% WR, $1,839.48 net, avg R= 0.26
+    +     DRIVE_UP:   3 trades,  66.7% WR, $  553.06
+    +     ROTATION:   6 trades,  66.7% WR, $1,286.42
+
+--- D10: Risk in Points ---
+   WINNERS: mean= 103.5 med= 104.0 min=  37.6 max= 195.8
+    LOSERS: mean=  94.9 med= 106.2 min=  48.6 max= 143.3
+
+--- D11: EOR Range ---
+   WINNERS: mean= 164.1 med= 159.5 min=  70.8 max= 279.0
+    LOSERS: mean= 165.6 med= 157.0 min= 100.5 max= 250.2
+
+--- D12: Exit Reason ---
+              EOD:   5 trades, 100.0% WR, $1,660.82 net
+   VWAP_BREACH_PM:   5 trades,  40.0% WR, $ -154.86 net
+             STOP:   2 trades,   0.0% WR, $ -221.63 net
+           TARGET:   5 trades, 100.0% WR, $2,992.10 net
+
+--- D13: Monthly Breakdown ---
+  2025-12:   8 trades,  62.5% WR, $  809.68 net
+  2026-01:   3 trades,  66.7% WR, $  976.66 net
+  2026-02:   6 trades,  83.3% WR, $2,490.09 net
+
+--- D14: Bars Held ---
+   WINNERS: mean= 172.4 med= 176.0 min=    1 max=  300
+    LOSERS: mean= 141.8 med= 150.0 min=    1 max=  257
+
+================================================================================
+  SECTION E: ACTIONABLE FILTER SUGGESTIONS
+================================================================================
+
+  [1] SWEEP_DEPTH: Losers have shallower sweeps (med -2.4%) vs winners (7.2%). Filter sweep_depth_pct < 10.4% would remove 3/5 losers but also 9/12 winners.
+
+  [2] ENTRY_TIMING: Losers enter later (med bar 13) vs winners (med bar 5). Consider max entry bar threshold.
+
+  [3] DRIVE_TYPE: ROTATION=75% WR vs directional drives=60% WR. ROTATION favored.
+
+  [4] DIRECTION: SHORT=75% WR ($2,437) vs LONG=67% WR ($1,839). 
+
+  [5] EOR_RANGE: Winners EOR med=160 vs Losers EOR med=157. Small EOR = tighter risk, more stop-outs.
+
+  [6] CVD_STRENGTH: Winners CVD shift med=172 vs Losers CVD shift med=-4. Stronger CVD divergence = better signal.
+
+  [7] RISK_PTS: Winners risk med=104.0 pts vs Losers risk med=106.2 pts. 
+
+  [8] DUAL_SWEEP: Both-sides-swept sessions: 10 trades, 80% WR vs single-sweep 57% WR. 
+
+================================================================================
+  SECTION F: HYPOTHETICAL FILTER BACKTESTS
+================================================================================
+
+  BASELINE: 17 trades, 70.6% WR, $4,276.43
+
+                               Filter  Trades    WR%      Net P&L    vs Base
+  ---------------------------------------------------------------------------
+                sweep_depth >= 2% EOR      11  81.8% $  3,599.26  -677.17
+                sweep_depth >= 3% EOR      11  81.8% $  3,599.26  -677.17
+                sweep_depth >= 5% EOR      11  81.8% $  3,599.26  -677.17
+                sweep_depth >= 8% EOR       7  71.4% $  1,912.36 -2,364.07
+                       |delta| >= 100      15  73.3% $  3,590.93  -685.50
+                       |delta| >= 200      11  63.6% $  1,766.62 -2,509.81
+                       |delta| >= 300       6  66.7% $  1,074.70 -3,201.73
+                       entry_bar <= 5      10  80.0% $  2,729.90 -1,546.53
+                      entry_bar <= 10      13  84.6% $  4,386.04 +  109.61
+                      entry_bar <= 15      15  80.0% $  4,682.06 +  405.63
+                      entry_bar <= 20      16  75.0% $  4,495.32 +  218.89
+                           SHORT only       8  75.0% $  2,436.95 -1,839.48
+                  ROTATION drive only      12  75.0% $  3,715.33  -561.10
+               Directional drive only       5  60.0% $    561.10 -3,715.33
+                            IB >= 120      14  71.4% $  4,013.07  -263.36
+                            IB >= 150      12  66.7% $  3,699.79  -576.64
+                            EOR >= 75      16  68.8% $  4,227.63   -48.80
+                           EOR >= 100      15  66.7% $  3,988.11  -288.32
+                  SHORT + sweep >= 3%       6  83.3% $  1,895.17 -2,381.26
+               SHORT + |delta| >= 100       6  83.3% $  1,751.45 -2,524.98
+
+================================================================================
+  ANALYSIS COMPLETE
+================================================================================

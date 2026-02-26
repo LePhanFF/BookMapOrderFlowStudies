@@ -1,18 +1,20 @@
 # Opening Range Reversal Trade Design
+**Updated:** 2026-02-24 (NT8 sync v2)
 
 ## Strategy Overview
 
 **Name:** Opening Range Reversal (OR Rev)
 **Time Window:** 9:30 - 10:00 ET (detection in first 30 bars of RTH)
 **Direction:** LONG and SHORT
-**Performance:** 56 trades, 66.1% WR, $14,030 net, PF 4.61, MaxDD $795 (259 sessions)
-**SHORT dominates:** 75% WR, $10,751 (32 trades) vs LONG 54% WR, $3,279 (24 trades)
+**Performance:** 56 trades, 67.9% WR, $15,275 net, PF 5.18, Sharpe 11.08, MaxDD $922 (260 sessions)
+**SHORT dominates:** ~75% WR vs LONG ~54% WR
+**Expectancy:** $273/trade
 
 ## Concept: ICT "Judas Swing"
 
 In the first 30 minutes of RTH, price makes a false move to sweep pre-market liquidity
-(overnight H/L, PDH/PDL, Asia H/L), then reverses. We enter on the reversal after the
-sweep extreme, when price crosses back through the OR midpoint with delta confirmation.
+(overnight H/L, PDH/PDL, Asia H/L, **London H/L**), then reverses. We enter on the reversal
+after the sweep extreme, when price crosses back through the OR midpoint with delta/CVD confirmation.
 
 **Key insight:** Do NOT fade the opening drive. If the first 5 bars drive UP strongly,
 do NOT short (that's a fade = 40% WR). Only take reversals that go WITH the drive or
@@ -29,6 +31,8 @@ From the JSON snapshot, the strategy needs:
     "overnight_low": 25300.0,
     "asia_high": 25480.0,
     "asia_low": 25320.0,
+    "london_high": 25490.0,
+    "london_low": 25340.0,
     "pdh": 25520.0,
     "pdl": 25280.0
   },
@@ -83,37 +87,75 @@ else:
     opening_drive = 'ROTATION'
 ```
 
-### Phase 3: Sweep Detection
+### Phase 3: Sweep Detection (Proximity-Based, Pick CLOSEST)
 
-Check if EOR extreme is near a key level:
+Check if EOR extreme is near a key level. **Pick the CLOSEST match** (not first match).
+Cap max distance at EOR range to prevent false sweeps of distant levels.
 
 ```python
 SWEEP_THRESHOLD = eor_range * 0.17  # ~17% of EOR range
 
-# Key levels to check
-high_levels = [overnight_high, pdh, asia_high]  # filter None
-low_levels  = [overnight_low, pdl, asia_low]     # filter None
+# Key levels to check (NEW: includes London H/L)
+high_candidates = [
+    ('ON_HIGH', overnight_high), ('PDH', pdh),
+    ('ASIA_HIGH', asia_high), ('LDN_HIGH', london_high)
+]
+low_candidates = [
+    ('ON_LOW', overnight_low), ('PDL', pdl),
+    ('ASIA_LOW', asia_low), ('LDN_LOW', london_low)
+]
 
-swept_high = any(abs(eor_high - lvl) < SWEEP_THRESHOLD for lvl in high_levels)
-swept_low  = any(abs(eor_low  - lvl) < SWEEP_THRESHOLD for lvl in low_levels)
+# Find closest swept level within threshold AND within EOR range
+def find_closest(eor_extreme, candidates):
+    best = None
+    for name, lvl in candidates:
+        if lvl is None: continue
+        dist = abs(eor_extreme - lvl)
+        if dist < SWEEP_THRESHOLD and dist <= eor_range:
+            if best is None or dist < best[1]:
+                best = (lvl, dist, name)
+    return best
+
+swept_high = find_closest(eor_high, high_candidates)
+swept_low  = find_closest(eor_low, low_candidates)
 ```
 
-### Phase 4: Reversal Confirmation
+### Phase 3b: Dual-Sweep Depth Comparison
 
-After the sweep extreme bar, scan for reversal:
+If BOTH high and low are swept, keep only the **deeper** penetration:
 
 ```python
+if swept_high and swept_low:
+    high_depth = eor_high - swept_high.level
+    low_depth  = swept_low.level - eor_low
+    if high_depth >= low_depth:
+        swept_low = None   # HIGH sweep wins
+    else:
+        swept_high = None  # LOW sweep wins
+```
+
+### Phase 4: Reversal Confirmation (Delta OR CVD)
+
+After the sweep extreme bar, scan for reversal. **Accept bar delta OR CVD divergence**
+(some valid entries have neutral bar delta but clear CVD trend).
+
+```python
+# Compute running CVD from bar 0 to current bar
+cvd_series = ib_bars['delta'].fillna(0).cumsum()
+
 # SHORT SETUP (Judas swing UP then reversal DOWN)
 if swept_high and opening_drive != 'DRIVE_UP':  # NOT fading
-    # Find the bar that made the EOR high
     high_bar_idx = eor_bars['high'].argmax()
-    # Scan bars after the high for reversal
-    for bar in session_bars[high_bar_idx+1 : high_bar_idx+31]:
+    cvd_at_extreme = cvd_series[high_bar_idx]
+
+    for j, bar in enumerate(session_bars[high_bar_idx+1 : high_bar_idx+31]):
         if bar['close'] < or_mid:                                    # Reversed below OR mid
             if abs(bar['close'] - bar['vwap']) < eor_range * 0.17:   # VWAP aligned
-                if bar['delta'] < 0:                                  # Seller confirmation
+                cvd_at_entry = cvd_series[high_bar_idx + j + 1]
+                cvd_declining = cvd_at_entry < cvd_at_extreme
+                if bar['delta'] < 0 or cvd_declining:                # Delta OR CVD
                     # SIGNAL: SHORT
-                    stop   = eor_high + eor_range * 0.15
+                    stop   = swept_high.level + eor_range * 0.15  # Stop at SWEPT LEVEL
                     risk   = stop - bar['close']
                     target = bar['close'] - 2 * risk   # 2R target
                     break
@@ -121,12 +163,16 @@ if swept_high and opening_drive != 'DRIVE_UP':  # NOT fading
 # LONG SETUP (Judas swing DOWN then reversal UP)
 if swept_low and opening_drive != 'DRIVE_DOWN':  # NOT fading
     low_bar_idx = eor_bars['low'].argmin()
-    for bar in session_bars[low_bar_idx+1 : low_bar_idx+31]:
+    cvd_at_extreme = cvd_series[low_bar_idx]
+
+    for j, bar in enumerate(session_bars[low_bar_idx+1 : low_bar_idx+31]):
         if bar['close'] > or_mid:                                    # Reversed above OR mid
             if abs(bar['close'] - bar['vwap']) < eor_range * 0.17:   # VWAP aligned
-                if bar['delta'] > 0:                                  # Buyer confirmation
+                cvd_at_entry = cvd_series[low_bar_idx + j + 1]
+                cvd_rising = cvd_at_entry > cvd_at_extreme
+                if bar['delta'] > 0 or cvd_rising:                   # Delta OR CVD
                     # SIGNAL: LONG
-                    stop   = eor_low - eor_range * 0.15
+                    stop   = swept_low.level - eor_range * 0.15  # Stop at SWEPT LEVEL
                     risk   = bar['close'] - stop
                     target = bar['close'] + 2 * risk   # 2R target
                     break
@@ -142,6 +188,19 @@ if risk < MIN_RISK or risk > MAX_RISK:
     skip  # Invalid risk parameters
 ```
 
+### ATR Stop Alternative (for personal accounts)
+
+2.5 ATR stop tested at +35% P&L vs swept level stop, but higher DD.
+**Recommended for personal accounts with $1M+ balance only.**
+
+```python
+# Alternative: ATR-based stop
+atr_stop = ATR(14) * 2.5
+stop = entry + atr_stop  # SHORT
+stop = entry - atr_stop  # LONG
+# Still target 2R from this wider stop
+```
+
 ## IB Regime Filter
 
 Only trade when IB range is MED, NORMAL, or HIGH:
@@ -154,47 +213,23 @@ Only trade when IB range is MED, NORMAL, or HIGH:
 
 | Exit | Condition | Priority |
 |------|-----------|----------|
-| **Target** | 2R from entry | Primary exit (33.8% of trades) |
-| **Stop** | Sweep extreme + 15% EOR range | Hard stop (25.8%) |
-| **VWAP Breach PM** | Price crosses VWAP after 13:00 | Afternoon reversal protection (18.8%) |
-| **EOD** | 15:59 ET | Flat by close (21.6%) |
+| **Target** | 2R from entry | Primary exit |
+| **Stop** | Swept level + 15% EOR range | Hard stop |
+| **VWAP Breach PM** | Price crosses VWAP after 13:00 | Afternoon reversal protection |
+| **EOD** | 15:59 ET | Flat by close |
 
-## What the LLM Should Look For in the JSON Snapshot
+## Changes from v1 (2026-02-24 NT8 Sync)
 
-When `current_et_time` is between 09:45 and 10:00, check:
-
-1. **Premarket sweep setup:** Did the EOR high sweep `overnight_high`, `pdh`, or `asia_high`?
-   Or did the EOR low sweep `overnight_low`, `pdl`, or `asia_low`?
-2. **Opening drive classification:** Was the first 5 minutes a strong drive (>40% directional)
-   or rotation? Do NOT short a strong drive-up. Do NOT long a strong drive-down.
-3. **Reversal confirmation:** Is price now on the other side of OR midpoint?
-4. **VWAP alignment:** Is price near VWAP (within ~17% of EOR range)?
-5. **Delta/order flow:** Is delta confirming the reversal direction?
-
-## Sample JSON Snapshot Fields Used
-
-```json
-{
-  "premarket": {
-    "overnight_high": 25500.0,
-    "overnight_low": 25300.0,
-    "pdh": 25520.0,
-    "pdl": 25280.0,
-    "asia_high": 25480.0,
-    "asia_low": 25320.0
-  },
-  "intraday": {
-    "ib": {
-      "ib_high": 25450.0,
-      "ib_low": 25350.0,
-      "ib_range": 100.0,
-      "vwap": 25400.0,
-      "atr_regime": "normal"
-    }
-  }
-}
-```
+| Change | Impact |
+|--------|--------|
+| Added London H/L to sweep candidates | +15 unfiltered trades |
+| Proximity-based sweep (closest match) | Prevents false 400pt "sweeps" |
+| Dual-sweep depth comparison | Picks correct side when both swept |
+| Stop at swept level (not EOR extreme) | More logical stop placement |
+| CVD divergence as delta alternative | +2 trades, +$1K net (best single change) |
+| ~~EOR mid entry zone~~ | **REVERTED**: -$7K on 1-min bars |
 
 ## Source File Reference
 
-Full implementation: `strategy/or_reversal.py` (284 lines) in BookMapOrderFlowStudies-2 repo.
+Full implementation: `strategy/or_reversal.py` in BookMapOrderFlowStudies-2 repo.
+NT8 indicator: `Indicators/ORReversalSignal.cs` in NinjaTrader 8 Custom folder.

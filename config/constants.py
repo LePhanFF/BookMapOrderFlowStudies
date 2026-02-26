@@ -71,3 +71,26 @@ VALUE_AREA_PCT = 0.70
 # ── VWAP Breach Threshold ──────────────────────────────────────
 VWAP_BREACH_RATIO = 0.07       # VWAP breach = 7% of IB range (was 10 pts absolute)
 VWAP_BREACH_POINTS = 10        # Legacy fallback for warmup (used when IB range unavailable)
+
+# ── Balance Signal Strategy ───────────────────────────────────
+BALANCE_MIN_QUALITY_SCORE = 4       # Minimum total score (out of 10) to fire signal
+BALANCE_COOLDOWN_BARS = 20          # Bars between entries per mode
+BALANCE_LAST_ENTRY_TIME = time(13, 30)  # No entries after 13:30 (PM morph kills MR)
+
+# VA Edge Fade mode
+BALANCE_VA_STOP_BUFFER_PCT = 0.15   # Stop: VAH/VAL + 15% of VA range beyond edge
+BALANCE_VA_MIN_RR = 1.0             # Minimum reward/risk ratio
+
+# Wide IB Reclaim mode
+BALANCE_IB_RECLAIM_MIN = 350        # Minimum IB range (pts) for wide IB reclaim
+BALANCE_IB_RECLAIM_MAX = 500        # Maximum IB range (pts) for wide IB reclaim
+BALANCE_IB_STOP_BUFFER_PCT = 0.10   # Stop: IB edge - 10% IB range
+
+# Dalton acceptance
+BALANCE_ACCEPT_EARLY = 2            # 2 consecutive closes = early acceptance
+BALANCE_ACCEPT_INSIDE = 6           # 6 consecutive closes = inside (30-min) acceptance
+
+# HVN/LVN detection
+BALANCE_HVN_PERCENTILE = 80         # Volume bins above this = HVN
+BALANCE_LVN_PERCENTILE = 20         # Volume bins below this = LVN
+BALANCE_EDGE_PROXIMITY_PCT = 0.10   # HVN/LVN within 10% of VA range from edge
