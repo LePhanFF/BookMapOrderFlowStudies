@@ -1466,4 +1466,1071 @@ if len(bt_bt) > 0:
         print(f"| {label} | {result['n']} | {result['trades_mo']:.1f} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} | {result['avg_risk']:.0f}p |")
 
 
+# ============================================================================
+# PART 9: COMPLETE EDGE FADE MATRIX — SWEEPS + VAH/VAL + ALL DAY TYPES
+# ============================================================================
+print("\n\n" + "=" * 70)
+print("PART 9: COMPLETE EDGE FADE MATRIX — SWEEPS, VAH/VAL, ALL DAY TYPES")
+print("=" * 70)
+
+print("""
+Testing every edge × every day type × both directions:
+  P-day: LONG at IBL (buy low of P), SHORT at IBH sweep (short high of P)
+  B-day: LONG at IBL (long B low), SHORT at IBH (short B seam)
+  Neutral/Wide: LONG at VAL/IBL after sweep, SHORT at VAH/IBH after sweep
+  IB range guides stops/targets, but market skews P or B or neutral
+""")
+
+# ── 9.0: Compute IB VAH/VAL + add prior-day VA to session data ────────────
+print("Computing IB VAH/VAL and sweep detection for all sessions...\n")
+
+sweep_touches = []   # sweep-based entries at IB edges + VA levels
+SWEEP_MIN = 3.0      # minimum points beyond level to count as sweep
+
+for _, row in sdf.iterrows():
+    session_date = row['session']
+    ib_high = row['ib_high']
+    ib_low = row['ib_low']
+    ib_range = row['ib_range']
+    ib_mid = row['ib_mid']
+    eod_day_type = row['eod_day_type']
+    poc_shape = row['poc_shape']
+
+    bars = get_session_bars(session_date)
+    if len(bars) < 90:
+        continue
+
+    ib_bars = bars.head(60)
+    post_ib = bars.iloc[60:]
+
+    # Compute IB VAH/VAL
+    ib_va = calculate_value_area(
+        ib_bars['high'].values, ib_bars['low'].values,
+        ib_bars['volume'].values, tick_size=0.25, va_percent=0.70
+    )
+    if ib_va:
+        ib_vah = ib_va.vah
+        ib_val = ib_va.val
+    else:
+        ib_vah = ib_high - ib_range * 0.15
+        ib_val = ib_low + ib_range * 0.15
+
+    # Prior-day VA levels (already in bars from compute_all_features)
+    prior_vah = bars['prior_va_vah'].iloc[0] if 'prior_va_vah' in bars.columns and not pd.isna(bars['prior_va_vah'].iloc[0]) else None
+    prior_val = bars['prior_va_val'].iloc[0] if 'prior_va_val' in bars.columns and not pd.isna(bars['prior_va_val'].iloc[0]) else None
+
+    # VWAP at IB close
+    vwap_at_ib = ib_bars['vwap'].iloc[-1] if 'vwap' in ib_bars.columns else ib_mid
+
+    # Define all levels to test
+    levels = [
+        ('IBH', ib_high, 'SHORT'),      # fade: sweep above IBH → short
+        ('IBL', ib_low, 'LONG'),         # fade: sweep below IBL → long
+        ('IB_VAH', ib_vah, 'SHORT'),     # fade: sweep above IB VAH → short
+        ('IB_VAL', ib_val, 'LONG'),      # fade: sweep below IB VAL → long
+    ]
+    if prior_vah is not None:
+        levels.append(('PRIOR_VAH', prior_vah, 'SHORT'))
+    if prior_val is not None:
+        levels.append(('PRIOR_VAL', prior_val, 'LONG'))
+
+    # Track cooldowns per level
+    last_touch_by_level = {}
+
+    for i, (idx, bar) in enumerate(post_ib.iterrows()):
+        bar_idx = 60 + i
+        bar_time = bar['time']
+        if bar_time >= ENTRY_CUTOFF:
+            break
+
+        delta = bar.get('delta', 0)
+        vwap = bar.get('vwap', ib_mid)
+
+        for level_name, level_price, fade_dir in levels:
+            # Cooldown
+            last = last_touch_by_level.get(level_name, -30)
+            if bar_idx - last < 15:
+                continue
+
+            is_sweep = False
+            penetration = 0
+
+            if fade_dir == 'LONG':
+                # Sweep below: bar low goes below level, close comes back above
+                if bar['low'] < level_price - SWEEP_MIN:
+                    penetration = level_price - bar['low']
+                    # Check if price sweeps and rejects (close back near/above level)
+                    if bar['close'] > level_price - ib_range * 0.05:
+                        is_sweep = True
+                    # Or: touch-based (just got close enough)
+                    elif bar['low'] <= level_price + TOUCH_PROXIMITY:
+                        is_sweep = False  # just a touch, not a sweep
+            else:  # SHORT
+                if bar['high'] > level_price + SWEEP_MIN:
+                    penetration = bar['high'] - level_price
+                    if bar['close'] < level_price + ib_range * 0.05:
+                        is_sweep = True
+                    elif bar['high'] >= level_price - TOUCH_PROXIMITY:
+                        is_sweep = False
+
+            # Also detect plain touch (for comparison)
+            is_touch = False
+            if fade_dir == 'LONG' and bar['low'] <= level_price + TOUCH_PROXIMITY:
+                is_touch = True
+                if penetration == 0:
+                    penetration = max(0, level_price - bar['low'])
+            elif fade_dir == 'SHORT' and bar['high'] >= level_price - TOUCH_PROXIMITY:
+                is_touch = True
+                if penetration == 0:
+                    penetration = max(0, bar['high'] - level_price)
+
+            if not is_touch and not is_sweep:
+                continue
+
+            last_touch_by_level[level_name] = bar_idx
+
+            # Check acceptance models on future bars
+            future_bars = post_ib.iloc[i+1:i+61] if i+1 < len(post_ib) else pd.DataFrame()
+            accept_2x5min = False
+            accept_30min = False
+            accept_30min_bar = None
+
+            if len(future_bars) >= 2:
+                # 2x5min acceptance back inside
+                period_consec = 0
+                for ps in range(0, len(future_bars), 5):
+                    pe = min(ps + 5, len(future_bars))
+                    pc = future_bars.iloc[pe - 1]['close']
+                    if fade_dir == 'LONG':
+                        inside = pc > level_price
+                    else:
+                        inside = pc < level_price
+                    if inside:
+                        period_consec += 1
+                        if period_consec >= 2 and not accept_2x5min:
+                            accept_2x5min = True
+                    else:
+                        period_consec = 0
+
+                # 30min acceptance
+                if len(future_bars) >= 30:
+                    fc = future_bars.iloc[29]['close']
+                    if fade_dir == 'LONG' and fc > level_price:
+                        accept_30min = True
+                        accept_30min_bar = bar_idx + 30
+                    elif fade_dir == 'SHORT' and fc < level_price:
+                        accept_30min = True
+                        accept_30min_bar = bar_idx + 30
+
+            # Did price reach IB mid within 60 bars?
+            reached_mid = False
+            reached_vwap = False
+            max_adverse = 0
+
+            for fi, (fidx, fbar) in enumerate(future_bars.iterrows()):
+                if fade_dir == 'LONG':
+                    adverse = max(0, level_price - fbar['low'])
+                    if fbar['high'] >= ib_mid:
+                        reached_mid = True
+                    if vwap and not pd.isna(vwap) and fbar['high'] >= vwap:
+                        reached_vwap = True
+                else:
+                    adverse = max(0, fbar['high'] - level_price)
+                    if fbar['low'] <= ib_mid:
+                        reached_mid = True
+                    if vwap and not pd.isna(vwap) and fbar['low'] <= vwap:
+                        reached_vwap = True
+                if adverse > max_adverse:
+                    max_adverse = adverse
+
+            delta_aligned = (delta > 0) if fade_dir == 'LONG' else (delta < 0)
+
+            sweep_touches.append({
+                'session': session_date,
+                'level': level_name,
+                'level_price': level_price,
+                'fade_dir': fade_dir,
+                'is_sweep': is_sweep,
+                'is_touch': is_touch,
+                'penetration': penetration,
+                'touch_bar': bar_idx,
+                'touch_time': bar_time,
+                'delta': delta,
+                'delta_aligned': delta_aligned,
+                'vwap': vwap,
+                'vwap_vs_mid': 'above' if (vwap and not pd.isna(vwap) and vwap > ib_mid) else 'below',
+                'accept_2x5min': accept_2x5min,
+                'accept_30min': accept_30min,
+                'accept_30min_bar': accept_30min_bar,
+                'reached_mid': reached_mid,
+                'reached_vwap': reached_vwap,
+                'max_adverse': max_adverse,
+                'eod_day_type': eod_day_type,
+                'poc_shape': poc_shape,
+                'ib_high': ib_high,
+                'ib_low': ib_low,
+                'ib_range': ib_range,
+                'ib_mid': ib_mid,
+                'ib_vah': ib_vah,
+                'ib_val': ib_val,
+                'is_balance': row['is_balance'],
+                'is_wide_balance': row['is_wide_balance'],
+            })
+
+stdf = pd.DataFrame(sweep_touches)
+print(f"Total level touches/sweeps detected: {len(stdf)}")
+print(f"  Sweeps (penetration > {SWEEP_MIN} pts + close rejects): {stdf['is_sweep'].sum()}")
+for lv in ['IBH', 'IBL', 'IB_VAH', 'IB_VAL', 'PRIOR_VAH', 'PRIOR_VAL']:
+    sub = stdf[stdf['level'] == lv]
+    if len(sub) > 0:
+        print(f"  {lv}: {len(sub)} touches, {sub['is_sweep'].sum()} sweeps")
+
+
+# ── 9.1: Backtest helper for sweep-based entries ──────────────────────────
+def backtest_level_fade(touches, entry_filter, stop_buffer_pct, target_mode, label):
+    """Backtest a level fade with sweep/acceptance filter."""
+    trades = []
+
+    for _, touch in touches.iterrows():
+        if not entry_filter(touch):
+            continue
+
+        session_date = touch['session']
+        fade_dir = touch['fade_dir']
+        level_price = touch['level_price']
+        ib_high = touch['ib_high']
+        ib_low = touch['ib_low']
+        ib_range = touch['ib_range']
+        ib_mid = touch['ib_mid']
+        vwap = touch['vwap']
+
+        # Entry at acceptance bar or touch bar
+        entry_bar_idx = touch['touch_bar']
+        if touch['accept_30min'] and touch.get('accept_30min_bar') and pd.notna(touch['accept_30min_bar']):
+            entry_bar_idx = int(touch['accept_30min_bar'])
+
+        bars_session = get_session_bars(session_date)
+        if entry_bar_idx >= len(bars_session):
+            continue
+        entry_price = bars_session.iloc[entry_bar_idx]['close']
+
+        # Stop: beyond the level by buffer
+        if fade_dir == 'LONG':
+            stop = level_price - ib_range * stop_buffer_pct
+        else:
+            stop = level_price + ib_range * stop_buffer_pct
+
+        risk = abs(entry_price - stop)
+        if risk <= 0:
+            continue
+
+        # Target
+        if target_mode == 'ib_mid':
+            target = ib_mid
+        elif target_mode == 'vwap':
+            target = vwap if vwap and not pd.isna(vwap) else ib_mid
+        elif target_mode == 'opposite_edge':
+            target = ib_high if fade_dir == 'LONG' else ib_low
+        elif target_mode == 'ib_vah_val':
+            target = touch['ib_vah'] if fade_dir == 'LONG' else touch['ib_val']
+        else:
+            target = ib_mid
+
+        # Ensure target in right direction
+        if fade_dir == 'LONG' and target <= entry_price:
+            target = entry_price + risk
+        if fade_dir == 'SHORT' and target >= entry_price:
+            target = entry_price - risk
+
+        # Walk bars
+        remaining = bars_session.iloc[entry_bar_idx:]
+        outcome = 'EOD'
+        exit_price = remaining['close'].iloc[-1]
+
+        for _, bar in remaining.iterrows():
+            if bar['time'] >= EOD_EXIT:
+                exit_price = bar['close']
+                outcome = 'EOD'
+                break
+            if fade_dir == 'LONG':
+                if bar['low'] <= stop:
+                    exit_price = stop
+                    outcome = 'STOP'
+                    break
+                if bar['high'] >= target:
+                    exit_price = target
+                    outcome = 'TARGET'
+                    break
+            else:
+                if bar['high'] >= stop:
+                    exit_price = stop
+                    outcome = 'STOP'
+                    break
+                if bar['low'] <= target:
+                    exit_price = target
+                    outcome = 'TARGET'
+                    break
+
+        pnl_pts = (exit_price - entry_price) if fade_dir == 'LONG' else (entry_price - exit_price)
+
+        trades.append({
+            'session': session_date,
+            'direction': fade_dir,
+            'level': touch['level'],
+            'entry': entry_price,
+            'stop': stop,
+            'target': target,
+            'exit': exit_price,
+            'pnl_pts': pnl_pts,
+            'pnl_dollars': pnl_pts_to_dollars(pnl_pts),
+            'outcome': outcome,
+            'risk_pts': risk,
+        })
+
+    if not trades:
+        return None
+    tdf_r = pd.DataFrame(trades)
+    n = len(tdf_r)
+    wins = (tdf_r['pnl_pts'] > 0).sum()
+    wr = wins / n * 100
+    total_pnl = tdf_r['pnl_dollars'].sum()
+    monthly_pnl = total_pnl / months
+    gw = tdf_r[tdf_r['pnl_pts'] > 0]['pnl_dollars'].sum()
+    gl = abs(tdf_r[tdf_r['pnl_pts'] <= 0]['pnl_dollars'].sum())
+    pf = gw / gl if gl > 0 else float('inf')
+    return {'label': label, 'n': n, 'trades_mo': n / months, 'wr': wr,
+            'pf': pf, 'monthly': monthly_pnl, 'avg_risk': tdf_r['risk_pts'].mean(),
+            'trades_df': tdf_r}
+
+
+def print_result(result):
+    if result is None or result['n'] == 0:
+        return "0 | — | — | — | — | — | —"
+    return f"{result['n']} | {result['trades_mo']:.1f} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} | {result['avg_risk']:.0f}p"
+
+
+# ── 9.2: P-DAY EDGES ─────────────────────────────────────────────────────
+print("\n\n### 9.2: P-Day Edge Fades — Buy Low of P, Short High of P Sweep\n")
+print("P-day = bullish skew (POC migrating up)")
+print("  LONG: buy at IBL or IB VAL after price sweeps below and rejects")
+print("  SHORT: short at IBH after price sweeps above IBH and fails\n")
+
+pday = stdf[stdf['eod_day_type'] == 'P_DAY']
+
+print(f"| P-Day Edge | Dir | N | T/Mo | WR | PF | $/Mo | Risk |")
+print(f"|------------|-----|---|------|-----|-----|------|------|")
+
+pday_tests = [
+    # Buy low of P
+    ('IBL touch+30min', 'LONG', lambda t: t['level'] == 'IBL' and t['accept_30min']),
+    ('IBL sweep+30min', 'LONG', lambda t: t['level'] == 'IBL' and t['is_sweep'] and t['accept_30min']),
+    ('IBL touch+2x5min', 'LONG', lambda t: t['level'] == 'IBL' and t['accept_2x5min']),
+    ('IB_VAL touch+30min', 'LONG', lambda t: t['level'] == 'IB_VAL' and t['accept_30min']),
+    ('IB_VAL sweep+30min', 'LONG', lambda t: t['level'] == 'IB_VAL' and t['is_sweep'] and t['accept_30min']),
+    ('PRIOR_VAL touch+30min', 'LONG', lambda t: t['level'] == 'PRIOR_VAL' and t['accept_30min']),
+    # Short high of P sweep
+    ('IBH touch+30min', 'SHORT', lambda t: t['level'] == 'IBH' and t['accept_30min']),
+    ('IBH sweep+30min', 'SHORT', lambda t: t['level'] == 'IBH' and t['is_sweep'] and t['accept_30min']),
+    ('IBH sweep+2x5min', 'SHORT', lambda t: t['level'] == 'IBH' and t['is_sweep'] and t['accept_2x5min']),
+    ('IB_VAH touch+30min', 'SHORT', lambda t: t['level'] == 'IB_VAH' and t['accept_30min']),
+    ('IB_VAH sweep+30min', 'SHORT', lambda t: t['level'] == 'IB_VAH' and t['is_sweep'] and t['accept_30min']),
+]
+
+for name, direction, filt in pday_tests:
+    result = backtest_level_fade(pday, filt, 0.10, 'ib_mid', name)
+    n_str = print_result(result)
+    print(f"| {name} | {direction} | {n_str} |")
+
+
+# ── 9.3: B-DAY EDGES ─────────────────────────────────────────────────────
+print("\n\n### 9.3: B-Day Edge Fades — Long B Low, Short B Seam\n")
+print("B-day = bearish skew (POC in lower third)")
+print("  LONG: buy at IBL (long the low of the B) after sweep/acceptance")
+print("  SHORT: short at IBH (short the seam of B) after sweep/acceptance\n")
+
+bday = stdf[stdf['eod_day_type'] == 'B_DAY']
+
+print(f"| B-Day Edge | Dir | N | T/Mo | WR | PF | $/Mo | Risk |")
+print(f"|------------|-----|---|------|-----|-----|------|------|")
+
+bday_tests = [
+    # Long B low
+    ('IBL touch+30min', 'LONG', lambda t: t['level'] == 'IBL' and t['accept_30min']),
+    ('IBL sweep+30min', 'LONG', lambda t: t['level'] == 'IBL' and t['is_sweep'] and t['accept_30min']),
+    ('IBL touch+2x5min', 'LONG', lambda t: t['level'] == 'IBL' and t['accept_2x5min']),
+    ('IBL sweep+delta', 'LONG', lambda t: t['level'] == 'IBL' and t['is_sweep'] and t['delta_aligned']),
+    ('IB_VAL touch+30min', 'LONG', lambda t: t['level'] == 'IB_VAL' and t['accept_30min']),
+    ('IB_VAL sweep+30min', 'LONG', lambda t: t['level'] == 'IB_VAL' and t['is_sweep'] and t['accept_30min']),
+    # Short B seam (IBH)
+    ('IBH touch+30min', 'SHORT', lambda t: t['level'] == 'IBH' and t['accept_30min']),
+    ('IBH sweep+30min', 'SHORT', lambda t: t['level'] == 'IBH' and t['is_sweep'] and t['accept_30min']),
+    ('IBH touch+2x5min', 'SHORT', lambda t: t['level'] == 'IBH' and t['accept_2x5min']),
+    ('IB_VAH touch+30min', 'SHORT', lambda t: t['level'] == 'IB_VAH' and t['accept_30min']),
+    ('IB_VAH sweep+30min', 'SHORT', lambda t: t['level'] == 'IB_VAH' and t['is_sweep'] and t['accept_30min']),
+]
+
+for name, direction, filt in bday_tests:
+    result = backtest_level_fade(bday, filt, 0.10, 'ib_mid', name)
+    n_str = print_result(result)
+    print(f"| {name} | {direction} | {n_str} |")
+
+
+# ── 9.4: NEUTRAL DAY EDGES ───────────────────────────────────────────────
+print("\n\n### 9.4: Neutral Day Edge Fades — Short VAH, Long VAL After Sweep\n")
+print("Neutral = POC at center, perfect rotation.")
+print("  IB range guides stops/targets. Sweep above VAH → short, sweep below VAL → long.\n")
+
+neutral = stdf[stdf['eod_day_type'] == 'NEUTRAL']
+
+print(f"| Neutral Edge | Dir | N | T/Mo | WR | PF | $/Mo | Risk |")
+print(f"|--------------|-----|---|------|-----|-----|------|------|")
+
+neutral_tests = [
+    # Long at VAL / IBL
+    ('IBL touch+30min', 'LONG', lambda t: t['level'] == 'IBL' and t['accept_30min']),
+    ('IBL sweep+30min', 'LONG', lambda t: t['level'] == 'IBL' and t['is_sweep'] and t['accept_30min']),
+    ('IB_VAL touch+30min', 'LONG', lambda t: t['level'] == 'IB_VAL' and t['accept_30min']),
+    ('IB_VAL sweep+30min', 'LONG', lambda t: t['level'] == 'IB_VAL' and t['is_sweep'] and t['accept_30min']),
+    ('PRIOR_VAL touch+30min', 'LONG', lambda t: t['level'] == 'PRIOR_VAL' and t['accept_30min']),
+    # Short at VAH / IBH
+    ('IBH touch+30min', 'SHORT', lambda t: t['level'] == 'IBH' and t['accept_30min']),
+    ('IBH sweep+30min', 'SHORT', lambda t: t['level'] == 'IBH' and t['is_sweep'] and t['accept_30min']),
+    ('IB_VAH touch+30min', 'SHORT', lambda t: t['level'] == 'IB_VAH' and t['accept_30min']),
+    ('IB_VAH sweep+30min', 'SHORT', lambda t: t['level'] == 'IB_VAH' and t['is_sweep'] and t['accept_30min']),
+    ('PRIOR_VAH touch+30min', 'SHORT', lambda t: t['level'] == 'PRIOR_VAH' and t['accept_30min']),
+]
+
+for name, direction, filt in neutral_tests:
+    result = backtest_level_fade(neutral, filt, 0.10, 'ib_mid', name)
+    n_str = print_result(result)
+    print(f"| {name} | {direction} | {n_str} |")
+
+
+# ── 9.5: WIDE RANGE / WIDE IB BALANCE ────────────────────────────────────
+print("\n\n### 9.5: Wide IB Balance Day — Short IBH/VAH, Long IBL/VAL\n")
+print("Wide IB (>200 pts) balance day: never trades outside IB.")
+print("Big range = big mean reversion. Fade edges with IB as the guide.\n")
+
+wide = stdf[stdf['is_wide_balance'] == True]
+
+print(f"| Wide IB Edge | Dir | N | T/Mo | WR | PF | $/Mo | Risk |")
+print(f"|--------------|-----|---|------|-----|-----|------|------|")
+
+wide_tests = [
+    ('IBL touch+30min', 'LONG', lambda t: t['level'] == 'IBL' and t['accept_30min']),
+    ('IBL sweep+30min', 'LONG', lambda t: t['level'] == 'IBL' and t['is_sweep'] and t['accept_30min']),
+    ('IB_VAL touch+30min', 'LONG', lambda t: t['level'] == 'IB_VAL' and t['accept_30min']),
+    ('IB_VAL sweep+30min', 'LONG', lambda t: t['level'] == 'IB_VAL' and t['is_sweep'] and t['accept_30min']),
+    ('IBH touch+30min', 'SHORT', lambda t: t['level'] == 'IBH' and t['accept_30min']),
+    ('IBH sweep+30min', 'SHORT', lambda t: t['level'] == 'IBH' and t['is_sweep'] and t['accept_30min']),
+    ('IB_VAH touch+30min', 'SHORT', lambda t: t['level'] == 'IB_VAH' and t['accept_30min']),
+    ('IB_VAH sweep+30min', 'SHORT', lambda t: t['level'] == 'IB_VAH' and t['is_sweep'] and t['accept_30min']),
+]
+
+for name, direction, filt in wide_tests:
+    result = backtest_level_fade(wide, filt, 0.10, 'ib_mid', name)
+    n_str = print_result(result)
+    print(f"| {name} | {direction} | {n_str} |")
+
+
+# ── 9.6: BEST EDGE PER DAY TYPE — SUMMARY MATRIX ─────────────────────────
+print("\n\n### 9.6: Best Edge Per Day Type — Summary Matrix\n")
+print("For each day type, which edge + direction gives the best edge?\n")
+
+print(f"| Day Type | Best LONG | WR | PF | $/Mo | Best SHORT | WR | PF | $/Mo |")
+print(f"|----------|-----------|-----|-----|------|------------|-----|-----|------|")
+
+for dt_name, dt_data in [('P_DAY', pday), ('B_DAY', bday), ('NEUTRAL', neutral), ('WIDE_IB', wide)]:
+    # Best LONG
+    best_long = None
+    best_long_monthly = -float('inf')
+    long_levels = ['IBL', 'IB_VAL', 'PRIOR_VAL']
+    for lv in long_levels:
+        for accept in ['accept_30min']:
+            filt = lambda t, l=lv, a=accept: t['level'] == l and t[a] == True
+            r = backtest_level_fade(dt_data, filt, 0.10, 'ib_mid', f'{lv}')
+            if r and r['n'] >= 3 and r['monthly'] > best_long_monthly:
+                best_long_monthly = r['monthly']
+                best_long = r
+                best_long['label'] = lv
+
+    # Best SHORT
+    best_short = None
+    best_short_monthly = -float('inf')
+    short_levels = ['IBH', 'IB_VAH', 'PRIOR_VAH']
+    for lv in short_levels:
+        for accept in ['accept_30min']:
+            filt = lambda t, l=lv, a=accept: t['level'] == l and t[a] == True
+            r = backtest_level_fade(dt_data, filt, 0.10, 'ib_mid', f'{lv}')
+            if r and r['n'] >= 3 and r['monthly'] > best_short_monthly:
+                best_short_monthly = r['monthly']
+                best_short = r
+                best_short['label'] = lv
+
+    bl = best_long
+    bs = best_short
+    bl_str = f"{bl['label']} | {bl['wr']:.0f}% | {bl['pf']:.2f} | ${bl['monthly']:.0f}" if bl else "— | — | — | —"
+    bs_str = f"{bs['label']} | {bs['wr']:.0f}% | {bs['pf']:.2f} | ${bs['monthly']:.0f}" if bs else "— | — | — | —"
+    print(f"| {dt_name} | {bl_str} | {bs_str} |")
+
+
+# ── 9.7: Sweep vs Plain Touch Comparison ──────────────────────────────────
+print("\n\n### 9.7: Does Sweep Improve Over Plain Touch?\n")
+print("Sweep = price penetrates beyond the level by 3+ pts then close rejects back")
+print("Touch = price just reaches the level (within 5 pts proximity)\n")
+
+print(f"| Day Type | Level | Touch WR (N) | Sweep WR (N) | Sweep Edge |")
+print(f"|----------|-------|-------------|-------------|-----------|")
+
+for dt in ['P_DAY', 'B_DAY', 'NEUTRAL']:
+    dt_sub = stdf[stdf['eod_day_type'] == dt]
+    for lv in ['IBH', 'IBL']:
+        lv_sub = dt_sub[dt_sub['level'] == lv]
+        touch_only = lv_sub[lv_sub['accept_30min'] == True]
+        sweep_only = lv_sub[(lv_sub['is_sweep'] == True) & (lv_sub['accept_30min'] == True)]
+        if len(touch_only) == 0:
+            continue
+        t_wr = touch_only['reached_mid'].mean() * 100
+        s_wr = sweep_only['reached_mid'].mean() * 100 if len(sweep_only) > 0 else 0
+        s_n = len(sweep_only)
+        edge = s_wr - t_wr if s_n > 0 else 0
+        print(f"| {dt} | {lv} | {t_wr:.0f}% (N={len(touch_only)}) | {s_wr:.0f}% (N={s_n}) | {edge:+.0f}pp |")
+
+
+# ── 9.8: Alternate Targets — IB VAH/VAL, VWAP, Opposite Edge ─────────────
+print("\n\n### 9.8: Target Comparison — IB Mid vs IB VAH/VAL vs VWAP vs Opposite Edge\n")
+print("On B-day LONG at IBL (the strongest setup), which target is best?\n")
+
+bday_ibl_30 = bday[(bday['level'] == 'IBL') & (bday['accept_30min'] == True)]
+
+print(f"| Target | N | WR | PF | $/Mo |")
+print(f"|--------|---|-----|-----|------|")
+
+for target_name, target_mode in [
+    ('IB Midpoint', 'ib_mid'),
+    ('IB VAH', 'ib_vah_val'),
+    ('VWAP', 'vwap'),
+    ('Opposite Edge (IBH)', 'opposite_edge'),
+]:
+    filt = lambda t: True
+    r = backtest_level_fade(bday_ibl_30, filt, 0.10, target_mode, target_name)
+    if r and r['n'] > 0:
+        print(f"| {target_name} | {r['n']} | {r['wr']:.0f}% | {r['pf']:.2f} | ${r['monthly']:.0f} |")
+    else:
+        print(f"| {target_name} | 0 | — | — | — |")
+
+
+# ── 9.9: Using IB POC Shape as Real-Time Proxy ───────────────────────────
+print("\n\n### 9.9: IB POC Shape as Real-Time Day Type Proxy\n")
+print("EOD day type can't be known in real-time. But IB POC shape is known at 10:30.")
+print("b-shape → likely B-day (54%). P-shape → likely P-day (42%). D-shape → could be anything.\n")
+
+print(f"| POC Shape | Edge | Dir | N | T/Mo | WR | PF | $/Mo |")
+print(f"|-----------|------|-----|---|------|-----|-----|------|")
+
+shape_tests = [
+    # b-shape: long the low
+    ('B_SHAPE', 'IBL', 'LONG', lambda t: t['poc_shape'] == 'B_SHAPE' and t['level'] == 'IBL' and t['accept_30min']),
+    ('B_SHAPE', 'IBH', 'SHORT', lambda t: t['poc_shape'] == 'B_SHAPE' and t['level'] == 'IBH' and t['accept_30min']),
+    # P-shape: short the high sweep, long the low
+    ('P_SHAPE', 'IBL', 'LONG', lambda t: t['poc_shape'] == 'P_SHAPE' and t['level'] == 'IBL' and t['accept_30min']),
+    ('P_SHAPE', 'IBH', 'SHORT', lambda t: t['poc_shape'] == 'P_SHAPE' and t['level'] == 'IBH' and t['accept_30min']),
+    # D-shape: both edges
+    ('D_SHAPE', 'IBL', 'LONG', lambda t: t['poc_shape'] == 'D_SHAPE' and t['level'] == 'IBL' and t['accept_30min']),
+    ('D_SHAPE', 'IBH', 'SHORT', lambda t: t['poc_shape'] == 'D_SHAPE' and t['level'] == 'IBH' and t['accept_30min']),
+]
+
+for shape, level, direction, filt in shape_tests:
+    result = backtest_level_fade(stdf, filt, 0.10, 'ib_mid', f'{shape} {level}')
+    n_str = print_result(result)
+    print(f"| {shape} | {level} | {direction} | {n_str} |")
+
+
+print("\n\nPart 9 complete.")
+
+
+# ============================================================================
+# PART 10: DPOC MIGRATION AS REAL-TIME ENTRY FILTER
+# ============================================================================
+print("\n\n" + "=" * 70)
+print("PART 10: DPOC MIGRATION — REAL-TIME ENTRY FILTER FOR EDGE FADES")
+print("=" * 70)
+
+print("""
+DPOC = Developing Point of Control. Unlike EOD day type (known only after close),
+DPOC migration direction and velocity are observable in real-time.
+
+Key question: Does DPOC migration direction at the time of an IB edge touch
+improve the win rate of the fade entry?
+
+Hypothesis:
+  - LONG at IBL + DPOC migrating DOWN = price building value lower → fade may fail
+  - LONG at IBL + DPOC migrating UP or FLAT = value holding → fade should work
+  - SHORT at IBH + DPOC migrating UP = value building higher → fade may fail
+  - SHORT at IBH + DPOC migrating DOWN or FLAT = value holding → fade should work
+
+We compute DPOC migration at each touch bar using 30-min volume-weighted POC slices,
+the same methodology as the rockit-framework DPOC migration module.
+""")
+
+# ── 10.0: Compute DPOC migration at each touch point ─────────────────────
+print("Computing DPOC migration at each touch point...\n")
+
+from collections import Counter as DPOCCounter
+
+def compute_dpoc_at_bar(bars, touch_bar_idx, ib_range):
+    """
+    Compute DPOC migration metrics at a specific bar index within a session.
+    Uses 30-min slices of post-IB bars up to the touch bar.
+    Returns dict with direction, net_migration, velocity, regime.
+    """
+    # Only use bars from IB close (bar 60) to the touch bar
+    post_ib = bars.iloc[60:touch_bar_idx + 1]
+    if len(post_ib) < 10:  # Need at least 10 bars post-IB
+        return None
+
+    # ATR-aware thresholds (use IB range as proxy)
+    atr_proxy = ib_range / 6  # rough ATR from IB range
+    cluster_threshold = max(15, atr_proxy * 0.6)
+    velocity_strong = max(25, atr_proxy * 0.8)
+    velocity_low = max(8, atr_proxy * 0.3)
+    exhausted_threshold = max(50, atr_proxy * 3)
+
+    # Divide post-IB bars into 30-bar (30-min) slices
+    completed_dpocs = []
+    for slice_start in range(0, len(post_ib), 30):
+        slice_end = min(slice_start + 30, len(post_ib))
+        slice_bars = post_ib.iloc[slice_start:slice_end]
+
+        if len(slice_bars) < 4:
+            continue  # developing slice, skip
+
+        # Volume-weighted POC for this slice
+        price_vol = DPOCCounter()
+        for _, sbar in slice_bars.iterrows():
+            vwap_price = sbar.get('vwap', sbar['close'])
+            if pd.isna(vwap_price):
+                vwap_price = sbar['close']
+            price = round(vwap_price * 4) / 4.0  # round to 0.25 tick
+            vol = int(sbar.get('volume', 1))
+            price_vol[price] += vol
+
+        if price_vol:
+            poc = max(price_vol, key=price_vol.get)
+        else:
+            poc = slice_bars['close'].mean()
+        completed_dpocs.append(round(poc, 2))
+
+    if len(completed_dpocs) < 2:
+        # Not enough slices for migration analysis
+        if len(completed_dpocs) == 1:
+            return {
+                'dpoc_direction': 'insufficient',
+                'dpoc_net_migration': 0,
+                'dpoc_velocity': 0,
+                'dpoc_regime': 'insufficient',
+                'dpoc_stabilizing': False,
+            }
+        return None
+
+    first_dpoc = completed_dpocs[0]
+    current_dpoc = completed_dpocs[-1]
+    net_migration = current_dpoc - first_dpoc
+
+    # Direction
+    if net_migration > cluster_threshold / 2:
+        direction = 'up'
+    elif net_migration < -cluster_threshold / 2:
+        direction = 'down'
+    else:
+        direction = 'flat'
+
+    # Velocity (avg pts per 30-min slice, last 3 slices)
+    deltas = [completed_dpocs[i+1] - completed_dpocs[i] for i in range(len(completed_dpocs) - 1)]
+    recent_deltas = deltas[-min(3, len(deltas)):]
+    avg_velocity = np.mean(recent_deltas) if recent_deltas else 0.0
+    abs_velocity = abs(avg_velocity)
+
+    # Retention
+    peak = max(completed_dpocs) if direction != "down" else min(completed_dpocs)
+    excursion = abs(peak - first_dpoc)
+    if excursion > 0:
+        retain_pct = abs(net_migration) / excursion * 100
+    else:
+        retain_pct = 100.0
+
+    # Stabilization (last 4 slices cluster)
+    recent_cluster = completed_dpocs[-min(4, len(completed_dpocs)):]
+    cluster_range = max(recent_cluster) - min(recent_cluster) if len(recent_cluster) > 1 else 0
+    is_stabilizing = cluster_range <= cluster_threshold and abs_velocity <= velocity_low
+
+    # Acceleration
+    decelerating = False
+    if len(recent_deltas) >= 2:
+        accel = recent_deltas[-1] - recent_deltas[-2]
+        if abs(accel) >= 8 and np.sign(avg_velocity) == -np.sign(accel):
+            decelerating = True
+
+    # Regime classification (simplified from rockit module)
+    if abs_velocity >= velocity_strong and not decelerating and retain_pct >= 70:
+        regime = 'trending_strong'
+    elif abs_velocity >= velocity_low and (decelerating or retain_pct < 60):
+        regime = 'trending_fading'
+    elif is_stabilizing:
+        regime = 'stabilizing'
+    else:
+        regime = 'transitional'
+
+    return {
+        'dpoc_direction': direction,
+        'dpoc_net_migration': round(net_migration, 2),
+        'dpoc_velocity': round(avg_velocity, 2),
+        'dpoc_abs_velocity': round(abs_velocity, 2),
+        'dpoc_regime': regime,
+        'dpoc_stabilizing': is_stabilizing,
+        'dpoc_retain_pct': round(retain_pct, 1),
+    }
+
+
+# Enrich the sweep touches dataframe with DPOC data at each touch
+dpoc_enriched = []
+dpoc_computed = 0
+dpoc_failed = 0
+
+for _, touch in stdf.iterrows():
+    session_date = touch['session']
+    touch_bar = touch['touch_bar']
+    ib_range = touch['ib_range']
+
+    bars = get_session_bars(session_date)
+    dpoc = compute_dpoc_at_bar(bars, int(touch_bar), ib_range)
+
+    row = touch.to_dict()
+    if dpoc is not None:
+        row.update(dpoc)
+        dpoc_computed += 1
+    else:
+        row['dpoc_direction'] = 'unknown'
+        row['dpoc_net_migration'] = 0
+        row['dpoc_velocity'] = 0
+        row['dpoc_abs_velocity'] = 0
+        row['dpoc_regime'] = 'unknown'
+        row['dpoc_stabilizing'] = False
+        row['dpoc_retain_pct'] = 0
+        dpoc_failed += 1
+
+    # Derived: is DPOC direction aligned with the fade?
+    # LONG fade + DPOC up/flat = aligned (value not migrating against the long)
+    # SHORT fade + DPOC down/flat = aligned
+    if row['fade_dir'] == 'LONG':
+        row['dpoc_aligned'] = row['dpoc_direction'] in ('up', 'flat')
+        row['dpoc_contra'] = row['dpoc_direction'] == 'down'
+    else:
+        row['dpoc_aligned'] = row['dpoc_direction'] in ('down', 'flat')
+        row['dpoc_contra'] = row['dpoc_direction'] == 'up'
+
+    dpoc_enriched.append(row)
+
+dpoc_df = pd.DataFrame(dpoc_enriched)
+print(f"DPOC computed for {dpoc_computed} / {len(stdf)} touches ({dpoc_failed} insufficient data)")
+
+# Distribution of DPOC direction at touch points
+print(f"\nDPOC direction distribution at edge touches:")
+for d in ['up', 'down', 'flat', 'insufficient', 'unknown']:
+    n = (dpoc_df['dpoc_direction'] == d).sum()
+    pct = n / len(dpoc_df) * 100 if len(dpoc_df) > 0 else 0
+    print(f"  {d}: {n} ({pct:.0f}%)")
+
+print(f"\nDPOC regime distribution at edge touches:")
+for r in ['trending_strong', 'trending_fading', 'stabilizing', 'transitional', 'insufficient', 'unknown']:
+    n = (dpoc_df['dpoc_regime'] == r).sum()
+    pct = n / len(dpoc_df) * 100 if len(dpoc_df) > 0 else 0
+    print(f"  {r}: {n} ({pct:.0f}%)")
+
+
+# ── 10.1: DPOC Direction as Filter — All Day Types ──────────────────────
+print("\n\n### 10.1: DPOC Direction as Entry Filter — All Day Types\n")
+print("Does filtering by DPOC direction at entry time improve the edge?\n")
+
+# Use only touches with valid DPOC and 30min acceptance
+valid_dpoc = dpoc_df[(dpoc_df['dpoc_direction'] != 'unknown') & (dpoc_df['dpoc_direction'] != 'insufficient')]
+
+print(f"| Filter | Level | Dir | N | T/Mo | WR | PF | $/Mo | Risk |")
+print(f"|--------|-------|-----|---|------|-----|-----|------|------|")
+
+dpoc_filter_tests = [
+    # Baseline: no DPOC filter
+    ('No DPOC filter', 'IBL', 'LONG',
+     lambda t: t['level'] == 'IBL' and t['accept_30min']),
+    # DPOC aligned (up/flat for LONG)
+    ('DPOC aligned', 'IBL', 'LONG',
+     lambda t: t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_aligned']),
+    # DPOC contra (down for LONG — should be worse)
+    ('DPOC contra', 'IBL', 'LONG',
+     lambda t: t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_contra']),
+    # DPOC flat only (value stationary = classic balance)
+    ('DPOC flat only', 'IBL', 'LONG',
+     lambda t: t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_direction'] == 'flat'),
+    # DPOC up only (bullish migration + long = strong alignment)
+    ('DPOC up only', 'IBL', 'LONG',
+     lambda t: t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_direction'] == 'up'),
+
+    # SHORT at IBH
+    ('No DPOC filter', 'IBH', 'SHORT',
+     lambda t: t['level'] == 'IBH' and t['accept_30min']),
+    ('DPOC aligned', 'IBH', 'SHORT',
+     lambda t: t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_aligned']),
+    ('DPOC contra', 'IBH', 'SHORT',
+     lambda t: t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_contra']),
+    ('DPOC flat only', 'IBH', 'SHORT',
+     lambda t: t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_direction'] == 'flat'),
+    ('DPOC down only', 'IBH', 'SHORT',
+     lambda t: t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_direction'] == 'down'),
+]
+
+for name, level, direction, filt in dpoc_filter_tests:
+    result = backtest_level_fade(valid_dpoc, filt, 0.10, 'ib_mid', f'{name} {level}')
+    n_str = print_result(result)
+    print(f"| {name} | {level} | {direction} | {n_str} |")
+
+
+# ── 10.2: DPOC Regime as Filter — Best Setups per Regime ──────────────────
+print("\n\n### 10.2: DPOC Regime as Entry Filter — By Regime\n")
+print("Which DPOC regime produces the best edge fade results?\n")
+print("  trending_strong  = DPOC moving fast with retention (continuation)")
+print("  trending_fading   = DPOC moving but decelerating (potential reversal)")
+print("  stabilizing      = DPOC cluster forming (balance, mean reversion)")
+print("  transitional     = unclear regime\n")
+
+print(f"| Regime | Level | Dir | N | T/Mo | WR | PF | $/Mo | Risk |")
+print(f"|--------|-------|-----|---|------|-----|-----|------|------|")
+
+for regime in ['trending_strong', 'trending_fading', 'stabilizing', 'transitional']:
+    regime_sub = valid_dpoc[valid_dpoc['dpoc_regime'] == regime]
+    if len(regime_sub) < 3:
+        print(f"| {regime} | IBL | LONG | 0 | — | — | — | — | — |")
+        continue
+
+    for level, direction, filt_extra in [
+        ('IBL', 'LONG', lambda t: t['level'] == 'IBL' and t['accept_30min']),
+        ('IBH', 'SHORT', lambda t: t['level'] == 'IBH' and t['accept_30min']),
+    ]:
+        result = backtest_level_fade(regime_sub, filt_extra, 0.10, 'ib_mid', f'{regime} {level}')
+        n_str = print_result(result)
+        print(f"| {regime} | {level} | {direction} | {n_str} |")
+
+
+# ── 10.3: DPOC × Day Type — Does DPOC Add Edge Within Day Types? ─────────
+print("\n\n### 10.3: DPOC × Day Type — Incremental Edge Over Day Type Alone\n")
+print("Within each day type, does DPOC alignment add edge over baseline?\n")
+
+print(f"| Day Type | DPOC Filter | Level | Dir | N | WR | PF | $/Mo | Delta vs Base |")
+print(f"|----------|-------------|-------|-----|---|-----|-----|------|--------------|")
+
+for dt in ['P_DAY', 'B_DAY', 'NEUTRAL']:
+    dt_sub = valid_dpoc[valid_dpoc['eod_day_type'] == dt]
+    if len(dt_sub) < 5:
+        continue
+
+    for level, direction in [('IBL', 'LONG'), ('IBH', 'SHORT')]:
+        # Baseline: day type + level + 30min acceptance, no DPOC filter
+        base_filt = lambda t, l=level: t['level'] == l and t['accept_30min']
+        base_r = backtest_level_fade(dt_sub, base_filt, 0.10, 'ib_mid', 'base')
+        base_wr = base_r['wr'] if base_r and base_r['n'] >= 3 else None
+        base_monthly = base_r['monthly'] if base_r and base_r['n'] >= 3 else None
+
+        for dpoc_label, dpoc_filt in [
+            ('None (baseline)', lambda t, l=level: t['level'] == l and t['accept_30min']),
+            ('DPOC aligned', lambda t, l=level: t['level'] == l and t['accept_30min'] and t['dpoc_aligned']),
+            ('DPOC contra', lambda t, l=level: t['level'] == l and t['accept_30min'] and t['dpoc_contra']),
+            ('Stabilizing', lambda t, l=level: t['level'] == l and t['accept_30min'] and t['dpoc_stabilizing']),
+        ]:
+            r = backtest_level_fade(dt_sub, dpoc_filt, 0.10, 'ib_mid', dpoc_label)
+            if r and r['n'] >= 2:
+                delta_wr = f"{r['wr'] - base_wr:+.0f}pp" if base_wr is not None else "—"
+                print(f"| {dt} | {dpoc_label} | {level} | {direction} | {r['n']} | {r['wr']:.0f}% | {r['pf']:.2f} | ${r['monthly']:.0f} | {delta_wr} |")
+            else:
+                print(f"| {dt} | {dpoc_label} | {level} | {direction} | 0 | — | — | — | — |")
+
+
+# ── 10.4: DPOC Velocity Buckets — Low/Med/High Velocity at Entry ─────────
+print("\n\n### 10.4: DPOC Velocity Buckets — Does Speed of Migration Matter?\n")
+print("Bucketing DPOC absolute velocity at entry time into low/med/high.\n")
+
+# Define velocity buckets based on data distribution
+vel_data = valid_dpoc[valid_dpoc['dpoc_abs_velocity'] > 0]['dpoc_abs_velocity']
+if len(vel_data) > 10:
+    vel_33 = vel_data.quantile(0.33)
+    vel_67 = vel_data.quantile(0.67)
+else:
+    vel_33 = 10
+    vel_67 = 25
+
+print(f"Velocity terciles: Low < {vel_33:.0f} pts/30min, Med {vel_33:.0f}-{vel_67:.0f}, High > {vel_67:.0f}\n")
+
+print(f"| Velocity | Level | Dir | N | T/Mo | WR | PF | $/Mo |")
+print(f"|----------|-------|-----|---|------|-----|-----|------|")
+
+for vel_label, vel_filt in [
+    ('Low', lambda t: t['dpoc_abs_velocity'] <= vel_33),
+    ('Medium', lambda t: t['dpoc_abs_velocity'] > vel_33 and t['dpoc_abs_velocity'] <= vel_67),
+    ('High', lambda t: t['dpoc_abs_velocity'] > vel_67),
+    ('Zero/Flat', lambda t: t['dpoc_abs_velocity'] == 0),
+]:
+    for level, direction in [('IBL', 'LONG'), ('IBH', 'SHORT')]:
+        combined_filt = lambda t, vf=vel_filt, l=level: t['level'] == l and t['accept_30min'] and vf(t)
+        result = backtest_level_fade(valid_dpoc, combined_filt, 0.10, 'ib_mid', f'{vel_label} {level}')
+        if result and result['n'] >= 2:
+            print(f"| {vel_label} | {level} | {direction} | {result['n']} | {result['trades_mo']:.1f} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} |")
+        else:
+            print(f"| {vel_label} | {level} | {direction} | 0 | — | — | — | — |")
+
+
+# ── 10.5: DPOC Net Migration Magnitude — Strong vs Weak ──────────────────
+print("\n\n### 10.5: DPOC Net Migration Magnitude at Entry\n")
+print("How much has the DPOC moved from first post-IB slice to entry time?\n")
+
+print(f"| Migration | Level | Dir | N | WR | PF | $/Mo |")
+print(f"|-----------|-------|-----|---|-----|-----|------|")
+
+mig_data = valid_dpoc['dpoc_net_migration'].abs()
+mig_25 = mig_data.quantile(0.25) if len(mig_data) > 10 else 5
+mig_75 = mig_data.quantile(0.75) if len(mig_data) > 10 else 30
+
+for mig_label, mig_filt in [
+    (f'Small (<{mig_25:.0f}pts)', lambda t: abs(t['dpoc_net_migration']) < mig_25),
+    (f'Medium ({mig_25:.0f}-{mig_75:.0f}pts)', lambda t: abs(t['dpoc_net_migration']) >= mig_25 and abs(t['dpoc_net_migration']) <= mig_75),
+    (f'Large (>{mig_75:.0f}pts)', lambda t: abs(t['dpoc_net_migration']) > mig_75),
+]:
+    for level, direction in [('IBL', 'LONG'), ('IBH', 'SHORT')]:
+        combined_filt = lambda t, mf=mig_filt, l=level: t['level'] == l and t['accept_30min'] and mf(t)
+        result = backtest_level_fade(valid_dpoc, combined_filt, 0.10, 'ib_mid', f'{mig_label} {level}')
+        if result and result['n'] >= 2:
+            print(f"| {mig_label} | {level} | {direction} | {result['n']} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} |")
+        else:
+            print(f"| {mig_label} | {level} | {direction} | 0 | — | — | — | — |")
+
+
+# ── 10.6: Best Combined Filter — DPOC + POC Shape + Day Type ─────────────
+print("\n\n### 10.6: Best Combined Filter — DPOC + POC Shape + Acceptance\n")
+print("Combining the best real-time filters: POC shape + DPOC regime + 30min acceptance\n")
+
+print(f"| Combo | N | T/Mo | WR | PF | $/Mo | Risk |")
+print(f"|-------|---|------|-----|-----|------|------|")
+
+combo_tests = [
+    # B-shape + DPOC aligned LONG at IBL (strongest from previous parts)
+    ('B-shape + DPOC aligned + IBL LONG',
+     lambda t: t['poc_shape'] == 'B_SHAPE' and t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_aligned']),
+    ('B-shape + DPOC stabilizing + IBL LONG',
+     lambda t: t['poc_shape'] == 'B_SHAPE' and t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_stabilizing']),
+    ('B-shape + DPOC NOT contra + IBL LONG',
+     lambda t: t['poc_shape'] == 'B_SHAPE' and t['level'] == 'IBL' and t['accept_30min'] and not t['dpoc_contra']),
+
+    # P-shape + DPOC aligned SHORT at IBH
+    ('P-shape + DPOC aligned + IBH SHORT',
+     lambda t: t['poc_shape'] == 'P_SHAPE' and t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_aligned']),
+    ('P-shape + DPOC stabilizing + IBH SHORT',
+     lambda t: t['poc_shape'] == 'P_SHAPE' and t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_stabilizing']),
+
+    # D-shape (neutral POC) + stabilizing DPOC = classic balance
+    ('D-shape + stabilizing + IBL LONG',
+     lambda t: t['poc_shape'] == 'D_SHAPE' and t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_stabilizing']),
+    ('D-shape + stabilizing + IBH SHORT',
+     lambda t: t['poc_shape'] == 'D_SHAPE' and t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_stabilizing']),
+
+    # Any shape + DPOC aligned (universal filter)
+    ('Any shape + DPOC aligned + IBL LONG',
+     lambda t: t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_aligned']),
+    ('Any shape + DPOC aligned + IBH SHORT',
+     lambda t: t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_aligned']),
+
+    # Strongest from Part 8: B-day LONG, now with DPOC
+    ('B-day + DPOC aligned + IBL LONG',
+     lambda t: t['eod_day_type'] == 'B_DAY' and t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_aligned']),
+    ('B-day + DPOC aligned + sweep + IBL LONG',
+     lambda t: t['eod_day_type'] == 'B_DAY' and t['level'] == 'IBL' and t['accept_30min'] and t['is_sweep'] and t['dpoc_aligned']),
+]
+
+for name, filt in combo_tests:
+    result = backtest_level_fade(valid_dpoc, filt, 0.10, 'ib_mid', name)
+    n_str = print_result(result)
+    print(f"| {name} | {n_str} |")
+
+
+# ── 10.7: DPOC Retention % — High Retention vs Fading ────────────────────
+print("\n\n### 10.7: DPOC Retention % — High vs Low Retention\n")
+print("Retention = how much of peak DPOC migration is preserved at entry time.")
+print("High retention = strong directional conviction. Low = fading/exhausting.\n")
+
+print(f"| Retention | Level | Dir | N | WR | PF | $/Mo |")
+print(f"|-----------|-------|-----|---|-----|-----|------|")
+
+for ret_label, ret_filt in [
+    ('High (>70%)', lambda t: t['dpoc_retain_pct'] > 70),
+    ('Medium (40-70%)', lambda t: t['dpoc_retain_pct'] >= 40 and t['dpoc_retain_pct'] <= 70),
+    ('Low (<40%)', lambda t: t['dpoc_retain_pct'] < 40),
+]:
+    for level, direction in [('IBL', 'LONG'), ('IBH', 'SHORT')]:
+        combined_filt = lambda t, rf=ret_filt, l=level: t['level'] == l and t['accept_30min'] and rf(t)
+        result = backtest_level_fade(valid_dpoc, combined_filt, 0.10, 'ib_mid', f'{ret_label} {level}')
+        if result and result['n'] >= 2:
+            print(f"| {ret_label} | {level} | {direction} | {result['n']} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} |")
+        else:
+            print(f"| {ret_label} | {level} | {direction} | 0 | — | — | — | — |")
+
+
+# ── 10.8: Summary — Does DPOC Migration Improve the Edge? ────────────────
+print("\n\n### 10.8: SUMMARY — Does DPOC Migration Add Edge?\n")
+print("Comparing best baseline (no DPOC) vs best DPOC-filtered configs:\n")
+
+print(f"| Comparison | N | WR | PF | $/Mo | Verdict |")
+print(f"|------------|---|-----|-----|------|---------|")
+
+# Baseline: IBL LONG + 30min acceptance (no DPOC)
+base_long = backtest_level_fade(valid_dpoc,
+    lambda t: t['level'] == 'IBL' and t['accept_30min'], 0.10, 'ib_mid', 'base')
+# DPOC aligned
+aligned_long = backtest_level_fade(valid_dpoc,
+    lambda t: t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_aligned'], 0.10, 'ib_mid', 'aligned')
+# DPOC contra
+contra_long = backtest_level_fade(valid_dpoc,
+    lambda t: t['level'] == 'IBL' and t['accept_30min'] and t['dpoc_contra'], 0.10, 'ib_mid', 'contra')
+
+for label, r in [('IBL LONG baseline', base_long), ('IBL LONG + DPOC aligned', aligned_long), ('IBL LONG + DPOC contra', contra_long)]:
+    if r and r['n'] >= 2:
+        verdict = ""
+        if base_long and r['wr'] > base_long['wr'] + 3:
+            verdict = "BETTER"
+        elif base_long and r['wr'] < base_long['wr'] - 3:
+            verdict = "WORSE"
+        else:
+            verdict = "SIMILAR"
+        print(f"| {label} | {r['n']} | {r['wr']:.0f}% | {r['pf']:.2f} | ${r['monthly']:.0f} | {verdict} |")
+    else:
+        print(f"| {label} | 0 | — | — | — | — |")
+
+# Same for SHORT
+base_short = backtest_level_fade(valid_dpoc,
+    lambda t: t['level'] == 'IBH' and t['accept_30min'], 0.10, 'ib_mid', 'base')
+aligned_short = backtest_level_fade(valid_dpoc,
+    lambda t: t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_aligned'], 0.10, 'ib_mid', 'aligned')
+contra_short = backtest_level_fade(valid_dpoc,
+    lambda t: t['level'] == 'IBH' and t['accept_30min'] and t['dpoc_contra'], 0.10, 'ib_mid', 'contra')
+
+for label, r in [('IBH SHORT baseline', base_short), ('IBH SHORT + DPOC aligned', aligned_short), ('IBH SHORT + DPOC contra', contra_short)]:
+    if r and r['n'] >= 2:
+        verdict = ""
+        if base_short and r['wr'] > base_short['wr'] + 3:
+            verdict = "BETTER"
+        elif base_short and r['wr'] < base_short['wr'] - 3:
+            verdict = "WORSE"
+        else:
+            verdict = "SIMILAR"
+        print(f"| {label} | {r['n']} | {r['wr']:.0f}% | {r['pf']:.2f} | ${r['monthly']:.0f} | {verdict} |")
+    else:
+        print(f"| {label} | 0 | — | — | — | — |")
+
+
+print("\n\nPart 10 complete.")
 print("\n\nStudy complete.")
