@@ -1308,4 +1308,162 @@ PART 7: Combined Optimal
 See tables above for detailed findings.
 """)
 
-print("Study complete.")
+# ============================================================================
+# PART 8: P-DAY vs B-DAY vs NEUTRAL SEGMENTATION
+# ============================================================================
+print("\n\n" + "=" * 70)
+print("PART 8: P-DAY vs B-DAY vs NEUTRAL — DIRECTION-SPECIFIC ANALYSIS")
+print("=" * 70)
+
+print("\nKey question: Should we go LONG-only on P-days and B-days (NQ long bias)?")
+print("Does shorting at the 'seam' of B-days work? Should we skip shorts on P-days?\n")
+
+# 8.1: Day type breakdown of IB edge touches
+print("### 8.1: IB Edge Touches by EOD Day Type\n")
+
+if len(tdf) > 0:
+    print(f"| Day Type | IBH Touches | IBL Touches | Total | Fade→Mid % (IBL LONG) | Fade→Mid % (IBH SHORT) |")
+    print(f"|----------|-------------|-------------|-------|----------------------|----------------------|")
+    for dt in ['P_DAY', 'B_DAY', 'NEUTRAL', 'TREND']:
+        sub = tdf[tdf['eod_day_type'] == dt]
+        if len(sub) == 0:
+            continue
+        ibh = sub[sub['edge'] == 'IBH']
+        ibl = sub[sub['edge'] == 'IBL']
+        ibl_succ = ibl['reached_mid'].mean() * 100 if len(ibl) > 0 else 0
+        ibh_succ = ibh['reached_mid'].mean() * 100 if len(ibh) > 0 else 0
+        print(f"| {dt} | {len(ibh)} | {len(ibl)} | {len(sub)} | {ibl_succ:.0f}% (N={len(ibl)}) | {ibh_succ:.0f}% (N={len(ibh)}) |")
+
+# 8.2: Backtest by day type — LONG-only vs SHORT-only vs BOTH
+print("\n### 8.2: 30-Min Acceptance Backtest by Day Type\n")
+
+if len(bt_bt) > 0:
+    print(f"| Day Type | Dir | N | T/Mo | WR | PF | $/Mo | Avg Risk |")
+    print(f"|----------|-----|---|------|-----|-----|------|---------|")
+
+    for dt in ['P_DAY', 'B_DAY', 'NEUTRAL', 'TREND']:
+        for direction in ['LONG', 'SHORT', 'BOTH']:
+            if direction == 'BOTH':
+                filter_fn = lambda t, d=dt: t['accept_30min'] == True and t['eod_day_type'] == d
+            else:
+                filter_fn = lambda t, d=dt, dr=direction: t['accept_30min'] == True and t['eod_day_type'] == d and t['fade_dir'] == dr
+
+            result = backtest_fade(bt_bt, filter_fn, 0.10, 'ib_mid', f'{dt} {direction}')
+            if result is None or result['n'] < 2:
+                print(f"| {dt} | {direction} | {result['n'] if result else 0} | — | — | — | — | — |")
+                continue
+            print(f"| {dt} | {direction} | {result['n']} | {result['trades_mo']:.1f} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} | {result['avg_risk']:.0f}p |")
+
+# 8.3: B-Day specific — LONG at IBL (the low of the B)
+print("\n### 8.3: B-Day LONG at IBL — 'Long at the Low of the B'\n")
+print("b-shape (POC in lower third) = heavy volume at the low → support")
+print("After price breaks below IBL and accepts back in → LONG to IB mid\n")
+
+if len(bt_bt) > 0:
+    # B-day LONG with various filters
+    bday_configs = [
+        ('B-day LONG (30min accept)', lambda t: t['accept_30min'] == True and t['eod_day_type'] == 'B_DAY' and t['fade_dir'] == 'LONG'),
+        ('B-day LONG (2x5min accept)', lambda t: t['accept_2x5min'] == True and t['eod_day_type'] == 'B_DAY' and t['fade_dir'] == 'LONG'),
+        ('B-day LONG + delta', lambda t: t['accept_2x5min'] == True and t['eod_day_type'] == 'B_DAY' and t['fade_dir'] == 'LONG' and t['delta_aligned'] == True),
+        ('B-day LONG + VWAP above mid', lambda t: t['accept_2x5min'] == True and t['eod_day_type'] == 'B_DAY' and t['fade_dir'] == 'LONG' and t['vwap_vs_mid'] == 'above'),
+        ('b-shape LONG (any day type)', lambda t: t['accept_30min'] == True and t['poc_shape'] == 'B_SHAPE' and t['fade_dir'] == 'LONG'),
+    ]
+
+    print(f"| Config | N | T/Mo | WR | PF | $/Mo | Avg Risk |")
+    print(f"|--------|---|------|-----|-----|------|---------|")
+    for label, filter_fn in bday_configs:
+        result = backtest_fade(bt_bt, filter_fn, 0.10, 'ib_mid', label)
+        if result is None or result['n'] == 0:
+            print(f"| {label} | 0 | — | — | — | — | — |")
+            continue
+        print(f"| {label} | {result['n']} | {result['trades_mo']:.1f} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} | {result['avg_risk']:.0f}p |")
+
+# 8.4: P-Day specific — LONG at IBL or VWAP, NO SHORTS
+print("\n### 8.4: P-Day LONG Only — 'Go Long if Opportunity Exists'\n")
+print("P-day = bullish skew (POC migrating up). Don't short P-day — NQ long bias.\n")
+
+if len(bt_bt) > 0:
+    pday_configs = [
+        ('P-day LONG (30min accept)', lambda t: t['accept_30min'] == True and t['eod_day_type'] == 'P_DAY' and t['fade_dir'] == 'LONG'),
+        ('P-day LONG (2x5min accept)', lambda t: t['accept_2x5min'] == True and t['eod_day_type'] == 'P_DAY' and t['fade_dir'] == 'LONG'),
+        ('P-day LONG + delta', lambda t: t['accept_2x5min'] == True and t['eod_day_type'] == 'P_DAY' and t['fade_dir'] == 'LONG' and t['delta_aligned'] == True),
+        ('P-day SHORT (for comparison)', lambda t: t['accept_30min'] == True and t['eod_day_type'] == 'P_DAY' and t['fade_dir'] == 'SHORT'),
+        ('P-shape LONG (any day type)', lambda t: t['accept_30min'] == True and t['poc_shape'] == 'P_SHAPE' and t['fade_dir'] == 'LONG'),
+    ]
+
+    print(f"| Config | N | T/Mo | WR | PF | $/Mo | Avg Risk |")
+    print(f"|--------|---|------|-----|-----|------|---------|")
+    for label, filter_fn in pday_configs:
+        result = backtest_fade(bt_bt, filter_fn, 0.10, 'ib_mid', label)
+        if result is None or result['n'] == 0:
+            print(f"| {label} | 0 | — | — | — | — | — |")
+            continue
+        print(f"| {label} | {result['n']} | {result['trades_mo']:.1f} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} | {result['avg_risk']:.0f}p |")
+
+# 8.5: Neutral Day — Both directions
+print("\n### 8.5: Neutral Day — Both Directions\n")
+print("Neutral = POC at center, balanced rotation. Both edges should fade equally.\n")
+
+if len(bt_bt) > 0:
+    neutral_configs = [
+        ('Neutral LONG (30min)', lambda t: t['accept_30min'] == True and t['eod_day_type'] == 'NEUTRAL' and t['fade_dir'] == 'LONG'),
+        ('Neutral SHORT (30min)', lambda t: t['accept_30min'] == True and t['eod_day_type'] == 'NEUTRAL' and t['fade_dir'] == 'SHORT'),
+        ('Neutral BOTH (30min)', lambda t: t['accept_30min'] == True and t['eod_day_type'] == 'NEUTRAL'),
+        ('D-shape LONG (any type)', lambda t: t['accept_30min'] == True and t['poc_shape'] == 'D_SHAPE' and t['fade_dir'] == 'LONG'),
+    ]
+
+    print(f"| Config | N | T/Mo | WR | PF | $/Mo | Avg Risk |")
+    print(f"|--------|---|------|-----|-----|------|---------|")
+    for label, filter_fn in neutral_configs:
+        result = backtest_fade(bt_bt, filter_fn, 0.10, 'ib_mid', label)
+        if result is None or result['n'] == 0:
+            print(f"| {label} | 0 | — | — | — | — | — |")
+            continue
+        print(f"| {label} | {result['n']} | {result['trades_mo']:.1f} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} | {result['avg_risk']:.0f}p |")
+
+# 8.6: LONG-only across all balance day types combined
+print("\n### 8.6: LONG-Only Strategy — Best Combinations\n")
+print("NQ long bias: LONG IBL fades dominate. What's the best LONG-only combo?\n")
+
+if len(bt_bt) > 0:
+    long_configs = [
+        ('ALL days LONG (30min)', lambda t: t['accept_30min'] == True and t['fade_dir'] == 'LONG'),
+        ('Balance LONG (30min)', lambda t: t['accept_30min'] == True and t['fade_dir'] == 'LONG' and t['is_balance'] == True),
+        ('B+P+N LONG (30min)', lambda t: t['accept_30min'] == True and t['fade_dir'] == 'LONG' and t['eod_day_type'] in ('B_DAY', 'P_DAY', 'NEUTRAL')),
+        ('P+B LONG only (30min)', lambda t: t['accept_30min'] == True and t['fade_dir'] == 'LONG' and t['eod_day_type'] in ('P_DAY', 'B_DAY')),
+        ('LONG + VWAP above mid (30min)', lambda t: t['accept_30min'] == True and t['fade_dir'] == 'LONG' and t['vwap_vs_mid'] == 'above'),
+        ('LONG + first touch (30min)', lambda t: t['accept_30min'] == True and t['fade_dir'] == 'LONG' and t['touch_num'] == 1),
+        ('LONG + first touch + VWAP above', lambda t: t['accept_30min'] == True and t['fade_dir'] == 'LONG' and t['touch_num'] == 1 and t['vwap_vs_mid'] == 'above'),
+    ]
+
+    print(f"| Config | N | T/Mo | WR | PF | $/Mo | Avg Risk |")
+    print(f"|--------|---|------|-----|-----|------|---------|")
+    for label, filter_fn in long_configs:
+        result = backtest_fade(bt_bt, filter_fn, 0.10, 'ib_mid', label)
+        if result is None or result['n'] == 0:
+            print(f"| {label} | 0 | — | — | — | — | — |")
+            continue
+        print(f"| {label} | {result['n']} | {result['trades_mo']:.1f} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} | {result['avg_risk']:.0f}p |")
+
+# 8.7: Does shorting at the "seam" of B-day work?
+print("\n### 8.7: B-Day SHORT at IBH — 'Shorting the Seam'\n")
+print("User question: does shorting at the seam of the B-day work?\n")
+
+if len(bt_bt) > 0:
+    bday_short_configs = [
+        ('B-day SHORT (30min)', lambda t: t['accept_30min'] == True and t['eod_day_type'] == 'B_DAY' and t['fade_dir'] == 'SHORT'),
+        ('B-day SHORT (2x5min)', lambda t: t['accept_2x5min'] == True and t['eod_day_type'] == 'B_DAY' and t['fade_dir'] == 'SHORT'),
+        ('B-day SHORT + delta', lambda t: t['accept_2x5min'] == True and t['eod_day_type'] == 'B_DAY' and t['fade_dir'] == 'SHORT' and t['delta_aligned'] == True),
+    ]
+
+    print(f"| Config | N | T/Mo | WR | PF | $/Mo | Avg Risk |")
+    print(f"|--------|---|------|-----|-----|------|---------|")
+    for label, filter_fn in bday_short_configs:
+        result = backtest_fade(bt_bt, filter_fn, 0.10, 'ib_mid', label)
+        if result is None or result['n'] == 0:
+            print(f"| {label} | 0 | — | — | — | — | — |")
+            continue
+        print(f"| {label} | {result['n']} | {result['trades_mo']:.1f} | {result['wr']:.0f}% | {result['pf']:.2f} | ${result['monthly']:.0f} | {result['avg_risk']:.0f}p |")
+
+
+print("\n\nStudy complete.")
