@@ -9,14 +9,13 @@ from strategy.b_day import BDayStrategy
 from strategy.neutral_day import NeutralDayStrategy
 from strategy.pm_morph import PMMorphStrategy
 from strategy.morph_to_trend import MorphToTrendStrategy
-
-# New research-based strategies (Feb 2026 evaluation research)
-from strategy.orb_vwap_breakout import ORBVwapBreakout
-from strategy.liquidity_sweep import LiquiditySweep
-from strategy.mean_reversion_vwap import MeanReversionVWAP
-from strategy.ema_trend_follow import EMATrendFollow
-from strategy.orb_enhanced import ORBEnhanced
-from strategy.eighty_percent_rule import EightyPercentRule
+from strategy.edge_fade import EdgeFadeStrategy
+from strategy.bear_accept import BearAcceptShort
+from strategy.ibh_sweep import IBHSweepFail
+from strategy.or_reversal import OpeningRangeReversal
+from strategy.or_acceptance import ORAcceptanceStrategy
+from strategy.ib_retest import IBRetestStrategy
+from strategy.balance_signal import BalanceSignal
 
 ALL_STRATEGIES = [
     TrendDayBull,
@@ -28,48 +27,43 @@ ALL_STRATEGIES = [
     NeutralDayStrategy,
     PMMorphStrategy,
     MorphToTrendStrategy,
-    # Research-based strategies
-    ORBVwapBreakout,
-    LiquiditySweep,
-    MeanReversionVWAP,
-    EMATrendFollow,
-    ORBEnhanced,
-    EightyPercentRule,
+    EdgeFadeStrategy,
+    BearAcceptShort,
+    IBHSweepFail,
+    OpeningRangeReversal,
+    ORAcceptanceStrategy,
+    IBRetestStrategy,
+    BalanceSignal,
 ]
 
-# Core strategies with demonstrated positive edge
-# Trend Bear and SuperTrend Bear removed: 25% WR, negative expectancy
-# NQ has strong long bias — short strategies consistently underperform
+# v14 Report 7-Strategy Portfolio (matches 2026.02.19-63days_final_report.md)
+# 1. Trend Day Bull     - VWAP pullback on trend_up/p_day (8 trades, 75% WR)
+# 2. P-Day              - VWAP pullback on p_day (8 trades, 75% WR)
+# 3. B-Day IBL Fade     - IBL fade on b_day (4 trades, 100% WR)
+# 4. Edge Fade OPTIMIZED - Mean reversion with 3 filters (17 trades, 94% WR)
+# 5. IBH Sweep+Fail     - IBH sweep fade on b_day (4 trades, 100% WR)
+# 6. Bear Accept Short  - Acceptance short on trend_down (11 trades, 64% WR)
+# 7. Opening Range Rev  - Judas Swing reversal (20 trades, 80% WR)
 CORE_STRATEGIES = [
     TrendDayBull,
-    SuperTrendBull,
     PDayStrategy,
     BDayStrategy,
-]
-
-# Research-based strategies for evaluation passing (Feb 2026)
-# These complement the core Dalton strategies with community-validated approaches
-RESEARCH_STRATEGIES = [
-    ORBVwapBreakout,
-    LiquiditySweep,
-    MeanReversionVWAP,
-    EMATrendFollow,
+    EdgeFadeStrategy,
+    IBHSweepFail,
+    BearAcceptShort,
+    OpeningRangeReversal,
+    IBRetestStrategy,
 ]
 
 
 def get_all_strategies():
-    """Instantiate all 9 Dalton playbook strategies."""
+    """Instantiate all Dalton playbook strategies."""
     return [cls() for cls in ALL_STRATEGIES]
 
 
 def get_core_strategies():
-    """Instantiate only strategies with demonstrated positive edge."""
+    """Instantiate the v14 7-strategy portfolio."""
     return [cls() for cls in CORE_STRATEGIES]
-
-
-def get_research_strategies():
-    """Instantiate research-based evaluation strategies."""
-    return [cls() for cls in RESEARCH_STRATEGIES]
 
 
 def get_strategies_by_name(*names):

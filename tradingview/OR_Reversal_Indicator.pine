@@ -1,0 +1,270 @@
+//@version=5
+indicator("OR Reversal (Judas Swing)", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+
+// =============================================================================
+// OPENING RANGE REVERSAL INDICATOR
+// =============================================================================
+// Marks OR (9:30-9:44), EOR (9:30-9:59), sweep levels, and reversal signals.
+// Based on 259-session backtest: 56 trades, 66.1% WR, $14,030, PF 4.61
+// SHORT side: 75% WR | LONG side: 54% WR
+//
+// Rules:
+//   1. EOR extreme sweeps overnight H/L, PDH/PDL, or Asia H/L (within 17% EOR range)
+//   2. Price reverses through OR midpoint after the sweep
+//   3. Entry is VWAP-aligned (within 17% of EOR range)
+//   4. Delta confirms direction (approximated via close vs open)
+//   5. NOT fading the opening drive (drive_up + short = fade = skip)
+//   6. Target: 2R | Stop: sweep extreme + 15% EOR range
+// =============================================================================
+
+// --- Inputs ---
+i_show_or       = input.bool(true, "Show OR Zone (9:30-9:44)", group="Display")
+i_show_eor      = input.bool(true, "Show EOR Zone (9:30-9:59)", group="Display")
+i_show_levels   = input.bool(true, "Show Sweep Levels (ON H/L, PDH/PDL)", group="Display")
+i_show_signals  = input.bool(true, "Show Entry Signals", group="Display")
+i_show_targets  = input.bool(true, "Show Stop/Target Lines", group="Display")
+i_sweep_pct     = input.float(0.17, "Sweep Threshold (% of EOR range)", step=0.01, group="Parameters")
+i_vwap_pct      = input.float(0.17, "VWAP Alignment (% of EOR range)", step=0.01, group="Parameters")
+i_stop_buffer   = input.float(0.15, "Stop Buffer (% of EOR range)", step=0.01, group="Parameters")
+i_drive_thresh  = input.float(0.4, "Drive Threshold", step=0.05, group="Parameters")
+i_target_r      = input.float(2.0, "Target (R multiple)", step=0.5, group="Parameters")
+
+// --- Session Detection ---
+is_rth = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+is_new_day = is_rth and not is_rth[1]
+
+// --- Time helpers (minutes from midnight ET) ---
+t = time("1", "0000-2359", "America/New_York")
+hour_et = hour(t, "America/New_York")
+min_et = minute(t, "America/New_York")
+mins_from_open = (hour_et - 9) * 60 + (min_et - 30)
+
+is_or_bar  = is_rth and mins_from_open >= 0 and mins_from_open < 15    // 9:30-9:44
+is_eor_bar = is_rth and mins_from_open >= 0 and mins_from_open < 30    // 9:30-9:59
+is_bar5    = is_rth and mins_from_open >= 0 and mins_from_open < 5     // first 5 bars
+is_post_eor = is_rth and mins_from_open >= 30 and mins_from_open < 60  // 10:00-10:29
+
+// --- Track OR / EOR levels ---
+var float or_high = na
+var float or_low = na
+var float or_mid = na
+var float eor_high = na
+var float eor_low = na
+var float eor_range = na
+
+var float drive_open = na
+var float drive_close = na
+var float drive_range_hi = na
+var float drive_range_lo = na
+
+if is_new_day
+    or_high := high
+    or_low := low
+    eor_high := high
+    eor_low := low
+    drive_open := open
+    drive_close := close
+    drive_range_hi := high
+    drive_range_lo := low
+
+if is_or_bar
+    or_high := math.max(or_high, high)
+    or_low := math.min(or_low, low)
+    or_mid := (or_high + or_low) / 2
+
+if is_eor_bar
+    eor_high := math.max(eor_high, high)
+    eor_low := math.min(eor_low, low)
+    eor_range := eor_high - eor_low
+
+if is_bar5
+    drive_close := close
+    drive_range_hi := math.max(drive_range_hi, high)
+    drive_range_lo := math.min(drive_range_lo, low)
+
+// --- Opening Drive Classification ---
+var string opening_drive = "ROTATION"
+if mins_from_open == 5
+    float dr = drive_range_hi - drive_range_lo
+    float drive_pct = dr > 0 ? (drive_close - drive_open) / dr : 0
+    if drive_pct > i_drive_thresh
+        opening_drive := "DRIVE_UP"
+    else if drive_pct < -i_drive_thresh
+        opening_drive := "DRIVE_DOWN"
+    else
+        opening_drive := "ROTATION"
+
+// --- Prior Day / Overnight Levels ---
+var float pdh = na
+var float pdl = na
+var float on_high = na
+var float on_low = na
+
+// Use request.security for prior day high/low
+[_pdh, _pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+pdh := _pdh
+pdl := _pdl
+
+// Overnight tracking (pre-market bars)
+is_overnight = not is_rth
+if is_overnight
+    if na(on_high) or is_rth[1]  // reset when RTH ends
+        on_high := high
+        on_low := low
+    else
+        on_high := math.max(on_high, high)
+        on_low := math.min(on_low, low)
+
+// --- VWAP ---
+vwap_val = ta.vwap(close)
+
+// --- Sweep Detection & Signal ---
+var bool signal_fired = false
+var float sig_entry = na
+var float sig_stop = na
+var float sig_target = na
+var int sig_dir = 0  // 1 = LONG, -1 = SHORT
+
+if is_new_day
+    signal_fired := false
+    sig_entry := na
+    sig_stop := na
+    sig_target := na
+    sig_dir := 0
+
+// Check for signal in post-EOR window (after EOR formed, before IB ends)
+if is_post_eor and not signal_fired and not na(eor_range) and eor_range > 0
+    float sweep_thresh = eor_range * i_sweep_pct
+    float vwap_thresh = eor_range * i_vwap_pct
+
+    // Sweep high levels?
+    bool swept_high = false
+    if not na(on_high) and math.abs(eor_high - on_high) < sweep_thresh
+        swept_high := true
+    if not na(pdh) and math.abs(eor_high - pdh) < sweep_thresh
+        swept_high := true
+
+    // Sweep low levels?
+    bool swept_low = false
+    if not na(on_low) and math.abs(eor_low - on_low) < sweep_thresh
+        swept_low := true
+    if not na(pdl) and math.abs(eor_low - pdl) < sweep_thresh
+        swept_low := true
+
+    // SHORT setup: swept high + price below OR mid + not fading drive up
+    if swept_high and close < or_mid and opening_drive != "DRIVE_UP"
+        if not na(vwap_val) and math.abs(close - vwap_val) < vwap_thresh
+            if close < open  // bearish bar (delta proxy)
+                float stop = eor_high + eor_range * i_stop_buffer
+                float risk = stop - close
+                if risk > eor_range * 0.03 and risk < eor_range * 1.3
+                    sig_entry := close
+                    sig_stop := stop
+                    sig_target := close - risk * i_target_r
+                    sig_dir := -1
+                    signal_fired := true
+
+    // LONG setup: swept low + price above OR mid + not fading drive down
+    if not signal_fired and swept_low and close > or_mid and opening_drive != "DRIVE_DOWN"
+        if not na(vwap_val) and math.abs(close - vwap_val) < vwap_thresh
+            if close > open  // bullish bar (delta proxy)
+                float stop = eor_low - eor_range * i_stop_buffer
+                float risk = close - stop
+                if risk > eor_range * 0.03 and risk < eor_range * 1.3
+                    sig_entry := close
+                    sig_stop := stop
+                    sig_target := close + risk * i_target_r
+                    sig_dir := 1
+                    signal_fired := true
+
+// --- Drawing ---
+// OR zone box
+var box or_box = na
+if is_or_bar and mins_from_open == 0 and i_show_or
+    or_box := box.new(bar_index, or_high, bar_index + 14, or_low,
+                       border_color=color.new(color.blue, 60), bgcolor=color.new(color.blue, 90))
+if is_or_bar and i_show_or and not na(or_box)
+    box.set_top(or_box, or_high)
+    box.set_bottom(or_box, or_low)
+    box.set_right(or_box, bar_index)
+
+// EOR zone box
+var box eor_box = na
+if is_eor_bar and mins_from_open == 0 and i_show_eor
+    eor_box := box.new(bar_index, eor_high, bar_index + 29, eor_low,
+                        border_color=color.new(color.orange, 60), bgcolor=color.new(color.orange, 93))
+if is_eor_bar and i_show_eor and not na(eor_box)
+    box.set_top(eor_box, eor_high)
+    box.set_bottom(eor_box, eor_low)
+    box.set_right(eor_box, bar_index)
+
+// OR midpoint line
+var line or_mid_line = na
+if mins_from_open == 30 and not na(or_mid)
+    or_mid_line := line.new(bar_index - 30, or_mid, bar_index + 60, or_mid,
+                            color=color.new(color.blue, 40), style=line.style_dashed, width=1)
+
+// Overnight levels
+if is_new_day and i_show_levels
+    if not na(on_high)
+        line.new(bar_index, on_high, bar_index + 90, on_high,
+                 color=color.new(color.purple, 40), style=line.style_dotted, width=1)
+        label.new(bar_index, on_high, "ON High", style=label.style_none,
+                  textcolor=color.purple, size=size.tiny)
+    if not na(on_low)
+        line.new(bar_index, on_low, bar_index + 90, on_low,
+                 color=color.new(color.purple, 40), style=line.style_dotted, width=1)
+        label.new(bar_index, on_low, "ON Low", style=label.style_none,
+                  textcolor=color.purple, size=size.tiny)
+    if not na(pdh)
+        line.new(bar_index, pdh, bar_index + 90, pdh,
+                 color=color.new(color.gray, 40), style=line.style_dotted, width=1)
+        label.new(bar_index, pdh, "PDH", style=label.style_none,
+                  textcolor=color.gray, size=size.tiny)
+    if not na(pdl)
+        line.new(bar_index, pdl, bar_index + 90, pdl,
+                 color=color.new(color.gray, 40), style=line.style_dotted, width=1)
+        label.new(bar_index, pdl, "PDL", style=label.style_none,
+                  textcolor=color.gray, size=size.tiny)
+
+// Signal markers
+if signal_fired and sig_dir == -1 and sig_dir[1] != -1 and i_show_signals
+    label.new(bar_index, high, "SHORT", style=label.style_label_down,
+              color=color.red, textcolor=color.white, size=size.normal)
+
+if signal_fired and sig_dir == 1 and sig_dir[1] != 1 and i_show_signals
+    label.new(bar_index, low, "LONG", style=label.style_label_up,
+              color=color.green, textcolor=color.white, size=size.normal)
+
+// Stop/Target lines on signal
+if signal_fired and ((sig_dir == -1 and sig_dir[1] != -1) or (sig_dir == 1 and sig_dir[1] != 1)) and i_show_targets
+    line.new(bar_index, sig_entry, bar_index + 60, sig_entry,
+             color=color.yellow, style=line.style_solid, width=2)
+    line.new(bar_index, sig_stop, bar_index + 60, sig_stop,
+             color=color.red, style=line.style_solid, width=2)
+    line.new(bar_index, sig_target, bar_index + 60, sig_target,
+             color=color.green, style=line.style_solid, width=2)
+    label.new(bar_index + 30, sig_stop, "STOP", style=label.style_none,
+              textcolor=color.red, size=size.tiny)
+    label.new(bar_index + 30, sig_target, "2R TARGET", style=label.style_none,
+              textcolor=color.green, size=size.tiny)
+
+// --- Info Table ---
+var table info = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info, 0, 0, "OR Reversal", text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 0, "", text_color=color.white, text_size=size.small)
+    table.cell(info, 0, 1, "Drive:", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 1, opening_drive, text_color=opening_drive == "DRIVE_UP" ? color.green : opening_drive == "DRIVE_DOWN" ? color.red : color.yellow, text_size=size.tiny)
+    table.cell(info, 0, 2, "EOR Range:", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 2, str.tostring(eor_range, "#.0") + " pts", text_color=color.white, text_size=size.tiny)
+    table.cell(info, 0, 3, "OR Mid:", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 3, str.tostring(or_mid, "#.00"), text_color=color.white, text_size=size.tiny)
+    table.cell(info, 0, 4, "Signal:", text_color=color.gray, text_size=size.tiny)
+    string sig_text = signal_fired ? (sig_dir == 1 ? "LONG" : "SHORT") : "NONE"
+    color sig_col = signal_fired ? (sig_dir == 1 ? color.green : color.red) : color.gray
+    table.cell(info, 1, 4, sig_text, text_color=sig_col, text_size=size.tiny)
+    table.cell(info, 0, 5, "IB Regime:", text_color=color.gray, text_size=size.tiny)
+    string regime = na(eor_range) ? "..." : eor_range < 100 ? "LOW (skip)" : eor_range < 150 ? "MED" : eor_range < 250 ? "NORMAL" : "HIGH"
+    color reg_col = na(eor_range) ? color.gray : eor_range < 100 ? color.red : color.green
+    table.cell(info, 1, 5, regime, text_color=reg_col, text_size=size.tiny)

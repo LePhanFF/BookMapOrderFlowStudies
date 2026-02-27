@@ -60,12 +60,37 @@ BDAY_STOP_IB_BUFFER = 0.1      # Stop 10% beyond IB edge
 BDAY_POOR_STRUCTURE_LOOKBACK = 10
 
 # ── Morph Strategy ──────────────────────────────────────────────
-PM_MORPH_BREAKOUT_POINTS = 15   # Min points beyond AM range for PM morph
-MORPH_TO_TREND_BREAKOUT_POINTS = 30  # Min points beyond IB for morph (was 20, too noisy)
-MORPH_TO_TREND_TARGET_POINTS = 150
+# Morph thresholds (IB-scaled ratios, not absolute points)
+PM_MORPH_BREAKOUT_RATIO = 0.10        # Min breakout = 10% of AM range (was 15 pts, ~10% of median IB)
+MORPH_TO_TREND_BREAKOUT_RATIO = 0.20  # Min breakout = 20% of IB range (was 30 pts, ~20% of median IB)
+MORPH_TO_TREND_TARGET_RATIO = 1.0     # Target = 1.0x IB range from entry (was 150 pts, ~1x median IB)
 
 # ── Value Area ──────────────────────────────────────────────────
 VALUE_AREA_PCT = 0.70
 
 # ── VWAP Breach Threshold ──────────────────────────────────────
-VWAP_BREACH_POINTS = 10        # Points below/above VWAP to signal trend failure
+VWAP_BREACH_RATIO = 0.07       # VWAP breach = 7% of IB range (was 10 pts absolute)
+VWAP_BREACH_POINTS = 10        # Legacy fallback for warmup (used when IB range unavailable)
+
+# ── Balance Signal Strategy ───────────────────────────────────
+BALANCE_MIN_QUALITY_SCORE = 4       # Minimum total score (out of 10) to fire signal
+BALANCE_COOLDOWN_BARS = 20          # Bars between entries per mode
+BALANCE_LAST_ENTRY_TIME = time(13, 30)  # No entries after 13:30 (PM morph kills MR)
+
+# VA Edge Fade mode
+BALANCE_VA_STOP_BUFFER_PCT = 0.15   # Stop: VAH/VAL + 15% of VA range beyond edge
+BALANCE_VA_MIN_RR = 1.0             # Minimum reward/risk ratio
+
+# Wide IB Reclaim mode
+BALANCE_IB_RECLAIM_MIN = 350        # Minimum IB range (pts) for wide IB reclaim
+BALANCE_IB_RECLAIM_MAX = 500        # Maximum IB range (pts) for wide IB reclaim
+BALANCE_IB_STOP_BUFFER_PCT = 0.10   # Stop: IB edge - 10% IB range
+
+# Dalton acceptance
+BALANCE_ACCEPT_EARLY = 2            # 2 consecutive closes = early acceptance
+BALANCE_ACCEPT_INSIDE = 6           # 6 consecutive closes = inside (30-min) acceptance
+
+# HVN/LVN detection
+BALANCE_HVN_PERCENTILE = 80         # Volume bins above this = HVN
+BALANCE_LVN_PERCENTILE = 20         # Volume bins below this = LVN
+BALANCE_EDGE_PROXIMITY_PCT = 0.10   # HVN/LVN within 10% of VA range from edge

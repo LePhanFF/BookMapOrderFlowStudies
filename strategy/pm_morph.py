@@ -33,7 +33,7 @@ import pandas as pd
 
 from strategy.base import StrategyBase
 from strategy.signal import Signal
-from config.constants import PM_MORPH_BREAKOUT_POINTS, VWAP_BREACH_POINTS
+from config.constants import PM_MORPH_BREAKOUT_RATIO, VWAP_BREACH_RATIO
 
 # Minimum stop distance as fraction of AM range
 PM_MORPH_MIN_STOP_FRAC = 0.25
@@ -86,7 +86,8 @@ class PMMorphStrategy(StrategyBase):
             return None
 
         # --- PM breakout detection (after 12:30) ---
-        breakout_threshold = PM_MORPH_BREAKOUT_POINTS
+        am_range = self._am_high - self._am_low
+        breakout_threshold = am_range * PM_MORPH_BREAKOUT_RATIO if am_range > 0 else 15
 
         # Track acceptance of breakout (3 bars to confirm PM morph, more conservative)
         if not self._breakout_confirmed:
@@ -126,14 +127,14 @@ class PMMorphStrategy(StrategyBase):
     ) -> Signal:
         current_price = bar['close']
         am_range = self._am_high - self._am_low
-        min_stop_dist = max(am_range * PM_MORPH_MIN_STOP_FRAC, 15.0)  # at least 15 pts
+        min_stop_dist = am_range * PM_MORPH_MIN_STOP_FRAC  # 25% of AM range (no absolute floor)
 
         if direction == 'LONG':
             # Stop: AM low or VWAP-based, whichever is closer but still meaningful
             stop_price = self._am_low
             vwap = bar.get('vwap')
             if vwap is not None and not pd.isna(vwap):
-                vwap_stop = vwap - VWAP_BREACH_POINTS
+                vwap_stop = vwap - self._ib_range * VWAP_BREACH_RATIO
                 if vwap_stop > self._am_low:
                     stop_price = vwap_stop
             # Enforce minimum stop distance
@@ -145,7 +146,7 @@ class PMMorphStrategy(StrategyBase):
             stop_price = self._am_high
             vwap = bar.get('vwap')
             if vwap is not None and not pd.isna(vwap):
-                vwap_stop = vwap + VWAP_BREACH_POINTS
+                vwap_stop = vwap + self._ib_range * VWAP_BREACH_RATIO
                 if vwap_stop < self._am_high:
                     stop_price = vwap_stop
             # Enforce minimum stop distance

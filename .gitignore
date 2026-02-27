@@ -1,7 +1,10 @@
 __pycache__/
 *.pyc
 *.pyo
-.pytest_cache/
+.claude/settings.local.json
+nul
 
-# Large CSV data files (unzipped from csv/*.zip)
+# Large CSV data files (259-session NinjaTrader exports, >100MB each)
 csv/*.csv
+csv/partial-data/
+csv/combined/

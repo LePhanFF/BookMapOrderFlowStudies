@@ -1,0 +1,318 @@
+//@version=5
+indicator("Edge Fade (IB Mean Reversion)", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+
+// =============================================================================
+// EDGE FADE INDICATOR -- IB Edge-to-Mid Mean Reversion
+// =============================================================================
+// Marks IB range, edge zones, and entry signals on balance/neutral days.
+// Based on 259-session backtest: 93 trades, 58.1% WR, $9,486, PF 1.75
+// LONG ONLY -- all NQ shorts lose in this setup.
+//
+// Rules:
+//   1. IB formed (10:30), IB range >= 1.2x 5-day average (expansion filter)
+//   2. Price in lower 25% of IB (the "edge zone")
+//   3. Bullish delta (close > open proxy) + volume confirmation
+//   4. No extension > 30% below IBL (bearish day filter)
+//   5. Time: 10:30-13:30 only (PM morph kills MR after 13:30)
+//   6. Target: IB midpoint | Stop: IBL - 15% IB range
+//   7. IB Regime: NORMAL (150-250) or HIGH (250+) only
+//
+// CVD Approximation: Uses cumulative (close-open)*volume as delta proxy.
+// Not as accurate as true bid/ask delta but directionally useful.
+//
+// Day Type Approximation: Uses IB extension ratio to classify day type.
+// b_day/neutral = extension < 0.5x IB range from IBH or IBL.
+// =============================================================================
+
+// --- Inputs ---
+i_show_ib       = input.bool(true, "Show IB Range Box", group="Display")
+i_show_edge     = input.bool(true, "Show Edge Zone (lower 25%)", group="Display")
+i_show_signals  = input.bool(true, "Show Entry Signals", group="Display")
+i_show_targets  = input.bool(true, "Show Stop/Target Lines", group="Display")
+i_show_cvd      = input.bool(true, "Show CVD Proxy Panel", group="Display")
+i_edge_pct      = input.float(0.25, "Edge Zone (% of IB from bottom)", step=0.05, group="Parameters")
+i_stop_buffer   = input.float(0.15, "Stop Buffer (% of IB range)", step=0.01, group="Parameters")
+i_ib_expansion  = input.float(1.2, "IB Expansion Ratio (vs 5-day avg)", step=0.1, group="Parameters")
+i_max_ext_down  = input.float(0.30, "Max Bearish Extension (% of IB)", step=0.05, group="Parameters")
+i_cooldown      = input.int(20, "Cooldown (bars between entries)", minval=5, group="Parameters")
+i_max_signals   = input.int(3, "Max Signals Per Session", minval=1, maxval=5, group="Parameters")
+i_cvd_lookback  = input.int(10, "CVD Divergence Lookback", minval=5, group="CVD")
+i_cvd_slope_bars = input.int(5, "CVD Slope Bars", minval=3, group="CVD")
+
+// --- Session Detection ---
+is_rth = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+is_new_day = is_rth and not is_rth[1]
+
+t = time("1", "0000-2359", "America/New_York")
+hour_et = hour(t, "America/New_York")
+min_et = minute(t, "America/New_York")
+mins_from_open = (hour_et - 9) * 60 + (min_et - 30)
+
+is_ib_bar = is_rth and mins_from_open >= 0 and mins_from_open < 60       // 9:30-10:29
+is_post_ib = is_rth and mins_from_open >= 60                              // 10:30+
+is_entry_window = is_rth and mins_from_open >= 60 and mins_from_open < 240 // 10:30-13:29
+
+// --- IB Levels ---
+var float ib_high = na
+var float ib_low = na
+var float ib_range = na
+var float ib_mid = na
+var bool ib_formed = false
+
+if is_new_day
+    ib_high := high
+    ib_low := low
+    ib_range := na
+    ib_mid := na
+    ib_formed := false
+
+if is_ib_bar
+    ib_high := math.max(ib_high, high)
+    ib_low := math.min(ib_low, low)
+
+if mins_from_open == 60 and not ib_formed
+    ib_range := ib_high - ib_low
+    ib_mid := (ib_high + ib_low) / 2
+    ib_formed := true
+
+// --- IB Range History (5-day average for expansion filter) ---
+var float[] ib_history = array.new_float(0)
+var float ib_avg_5d = na
+
+if mins_from_open == 60 and ib_formed
+    array.push(ib_history, ib_range)
+    if array.size(ib_history) > 5
+        array.shift(ib_history)
+    if array.size(ib_history) >= 5
+        ib_avg_5d := array.avg(ib_history)
+
+// --- IB Expansion Check ---
+var bool ib_expanded = false
+if mins_from_open == 60 and ib_formed
+    if na(ib_avg_5d)
+        ib_expanded := true  // not enough history, allow
+    else
+        ib_expanded := (ib_range / ib_avg_5d) >= i_ib_expansion
+
+// --- IB Regime ---
+var string ib_regime = "UNKNOWN"
+if ib_formed
+    if ib_range < 100
+        ib_regime := "LOW"
+    else if ib_range < 150
+        ib_regime := "MED"
+    else if ib_range < 250
+        ib_regime := "NORMAL"
+    else
+        ib_regime := "HIGH"
+
+// Edge Fade only trades NORMAL + HIGH
+var bool regime_ok = false
+if ib_formed
+    regime_ok := ib_regime == "NORMAL" or ib_regime == "HIGH"
+
+// --- CVD Proxy (cumulative delta approximation) ---
+// True CVD needs tick-level bid/ask data. This approximates using (close-open)*volume.
+// Positive = buyers dominated the bar, Negative = sellers dominated.
+float bar_delta = (close - open) * volume
+var float cvd = 0.0
+
+if is_new_day
+    cvd := 0.0
+cvd += bar_delta
+
+// CVD at IB end (baseline for divergence check)
+var float cvd_at_ib_end = na
+if mins_from_open == 60
+    cvd_at_ib_end := cvd
+
+// CVD divergence: price near lows but CVD rising (smart money accumulating)
+var bool cvd_divergence = false
+if is_entry_window and not na(cvd_at_ib_end)
+    // Check if CVD is rising over recent bars
+    float cvd_now = cvd
+    float cvd_prev = cvd[i_cvd_slope_bars]
+    bool cvd_rising = not na(cvd_prev) and cvd_now > cvd_prev
+
+    // Price should be in lower portion of recent range
+    float recent_high = ta.highest(high, i_cvd_lookback)
+    float recent_low = ta.lowest(low, i_cvd_lookback)
+    float price_range = recent_high - recent_low
+    float price_position = price_range > 0 ? (close - recent_low) / price_range : 0.5
+
+    cvd_divergence := cvd_rising and price_position < 0.40
+
+// --- Day Type Approximation ---
+// b_day/neutral: price hasn't extended far beyond IB in either direction
+// trend day: price extends > 0.5x IB range beyond IBH or IBL
+var float max_ext_up = 0.0
+var float max_ext_down = 0.0
+var string approx_day_type = "unknown"
+
+if is_new_day
+    max_ext_up := 0.0
+    max_ext_down := 0.0
+
+if is_post_ib and ib_formed and ib_range > 0
+    if high > ib_high
+        max_ext_up := math.max(max_ext_up, (high - ib_high) / ib_range)
+    if low < ib_low
+        max_ext_down := math.max(max_ext_down, (ib_low - low) / ib_range)
+
+    if max_ext_up > 0.5 or max_ext_down > 0.5
+        approx_day_type := "trend"
+    else
+        approx_day_type := "balance"  // b_day or neutral
+
+// --- Bearish Extension Filter ---
+// If price has dropped > 30% of IB range below IBL, skip (bearish day = 37% WR)
+var bool bearish_day = false
+if ib_formed and ib_range > 0
+    bearish_day := max_ext_down >= i_max_ext_down
+
+// --- Edge Zone Detection ---
+float edge_ceiling = ib_formed ? ib_low + ib_range * i_edge_pct : na
+bool in_edge_zone = ib_formed and close > ib_low and close < edge_ceiling
+
+// --- OF Quality Proxy ---
+// Approximate order flow quality: bullish bar + above-average volume + close in upper half
+bool bullish_bar = close > open
+bool vol_above_avg = volume > ta.sma(volume, 20)
+bool close_upper_half = (close - low) > (high - low) * 0.5
+int of_quality = (bullish_bar ? 1 : 0) + (vol_above_avg ? 1 : 0) + (close_upper_half ? 1 : 0)
+
+// --- FVG Detection (simplified) ---
+// Bullish FVG: current bar's low > 2 bars ago high (gap up not filled)
+bool fvg_bull = not na(high[2]) and low > high[2]
+
+// --- 5-min Inversion ---
+// Approximate: compare 5-bar blocks. Prior block bearish, current bullish.
+float block_open_prev = open[5]
+float block_close_prev = close[1]  // close of bar 1 ago
+bool prev_block_bearish = not na(block_open_prev) and block_close_prev < block_open_prev
+bool curr_block_bullish = close > open[0]
+bool inversion_5m = prev_block_bearish and curr_block_bullish
+
+// --- Entry Confirmation (any = high confidence) ---
+bool has_confirmation = cvd_divergence or fvg_bull or inversion_5m
+string confidence = has_confirmation ? "HIGH" : "MEDIUM"
+
+// --- Signal Logic ---
+var int last_signal_bar = -100
+var int signals_today = 0
+var float sig_entry = na
+var float sig_stop = na
+var float sig_target = na
+
+if is_new_day
+    signals_today := 0
+    sig_entry := na
+    sig_stop := na
+    sig_target := na
+
+bool signal_now = false
+
+if is_entry_window and ib_formed and ib_expanded and regime_ok
+    if not bearish_day and approx_day_type == "balance"
+        if in_edge_zone and of_quality >= 2
+            if (bar_index - last_signal_bar) >= i_cooldown and signals_today < i_max_signals
+                // Compute stop and target
+                float stop = ib_low - ib_range * i_stop_buffer
+                float target = ib_mid
+                float risk = close - stop
+                float reward = target - close
+                if risk > 0 and reward > 0 and (reward / risk) >= 1.0
+                    sig_entry := close
+                    sig_stop := stop
+                    sig_target := target
+                    last_signal_bar := bar_index
+                    signals_today += 1
+                    signal_now := true
+
+// --- Drawing ---
+// IB range box
+var box ib_box = na
+if mins_from_open == 60 and ib_formed and i_show_ib
+    ib_box := box.new(bar_index - 60, ib_high, bar_index + 180, ib_low,
+                       border_color=color.new(color.teal, 40), bgcolor=color.new(color.teal, 93))
+
+// IB midpoint
+if mins_from_open == 60 and ib_formed
+    line.new(bar_index, ib_mid, bar_index + 180, ib_mid,
+             color=color.new(color.teal, 50), style=line.style_dashed, width=1)
+    label.new(bar_index + 90, ib_mid, "IB Mid (TARGET)", style=label.style_none,
+              textcolor=color.teal, size=size.tiny)
+
+// Edge zone box
+var box edge_box = na
+if mins_from_open == 60 and ib_formed and i_show_edge
+    edge_box := box.new(bar_index, edge_ceiling, bar_index + 180, ib_low,
+                         border_color=color.new(color.lime, 60), bgcolor=color.new(color.lime, 93))
+
+// Signal markers
+if signal_now and i_show_signals
+    string lbl = "LONG\n" + confidence
+    if cvd_divergence
+        lbl += "\n+CVD div"
+    if fvg_bull
+        lbl += "\n+FVG"
+    if inversion_5m
+        lbl += "\n+5m inv"
+    label.new(bar_index, low, lbl, style=label.style_label_up,
+              color=has_confirmation ? color.green : color.lime,
+              textcolor=color.white, size=size.small)
+
+// Stop/Target lines on signal
+if signal_now and i_show_targets
+    line.new(bar_index, sig_entry, bar_index + 60, sig_entry,
+             color=color.yellow, style=line.style_solid, width=2)
+    line.new(bar_index, sig_stop, bar_index + 60, sig_stop,
+             color=color.red, style=line.style_solid, width=2)
+    line.new(bar_index, sig_target, bar_index + 60, sig_target,
+             color=color.green, style=line.style_solid, width=2)
+    label.new(bar_index + 30, sig_stop, "STOP", style=label.style_none,
+              textcolor=color.red, size=size.tiny)
+    label.new(bar_index + 30, sig_target, "IB MID", style=label.style_none,
+              textcolor=color.green, size=size.tiny)
+
+// --- CVD Panel (lower right) ---
+var table cvd_table = table.new(position.bottom_right, 2, 3, bgcolor=color.new(color.black, 80))
+if barstate.islast and i_show_cvd and is_rth
+    table.cell(cvd_table, 0, 0, "CVD Proxy:", text_color=color.gray, text_size=size.tiny)
+    table.cell(cvd_table, 1, 0, str.tostring(cvd, "#,###"), text_color=cvd > 0 ? color.green : color.red, text_size=size.tiny)
+    table.cell(cvd_table, 0, 1, "CVD @ IB:", text_color=color.gray, text_size=size.tiny)
+    table.cell(cvd_table, 1, 1, str.tostring(cvd_at_ib_end, "#,###"), text_color=color.white, text_size=size.tiny)
+    table.cell(cvd_table, 0, 2, "CVD Div:", text_color=color.gray, text_size=size.tiny)
+    table.cell(cvd_table, 1, 2, cvd_divergence ? "YES" : "NO", text_color=cvd_divergence ? color.green : color.gray, text_size=size.tiny)
+
+// --- Info Table ---
+var table info = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80))
+if barstate.islast and is_rth
+    table.cell(info, 0, 0, "Edge Fade", text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 0, "", text_size=size.small)
+
+    table.cell(info, 0, 1, "IB Range:", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 1, ib_formed ? str.tostring(ib_range, "#.0") + " pts" : "forming...", text_color=color.white, text_size=size.tiny)
+
+    table.cell(info, 0, 2, "Regime:", text_color=color.gray, text_size=size.tiny)
+    color reg_col = ib_regime == "LOW" or ib_regime == "MED" ? color.red : color.green
+    table.cell(info, 1, 2, ib_regime + (regime_ok ? "" : " (SKIP)"), text_color=ib_formed ? reg_col : color.gray, text_size=size.tiny)
+
+    table.cell(info, 0, 3, "Expanded:", text_color=color.gray, text_size=size.tiny)
+    string exp_txt = na(ib_avg_5d) ? "n/a" : ib_expanded ? "YES (" + str.tostring(ib_range / ib_avg_5d, "#.0x") + ")" : "NO (" + str.tostring(ib_range / ib_avg_5d, "#.0x") + ")"
+    table.cell(info, 1, 3, exp_txt, text_color=ib_expanded ? color.green : color.red, text_size=size.tiny)
+
+    table.cell(info, 0, 4, "Day Type:", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 4, approx_day_type, text_color=approx_day_type == "balance" ? color.green : color.red, text_size=size.tiny)
+
+    table.cell(info, 0, 5, "Bearish Ext:", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 5, str.tostring(max_ext_down * 100, "#.0") + "%" + (bearish_day ? " SKIP" : ""), text_color=bearish_day ? color.red : color.green, text_size=size.tiny)
+
+    table.cell(info, 0, 6, "In Edge:", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 6, in_edge_zone ? "YES" : "NO", text_color=in_edge_zone ? color.green : color.gray, text_size=size.tiny)
+
+    table.cell(info, 0, 7, "Signals:", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 7, str.tostring(signals_today) + "/" + str.tostring(i_max_signals), text_color=color.white, text_size=size.tiny)
+
+// --- Background color for entry window ---
+bgcolor(is_entry_window and ib_formed and ib_expanded and regime_ok and not bearish_day and approx_day_type == "balance" ? color.new(color.green, 95) : na)

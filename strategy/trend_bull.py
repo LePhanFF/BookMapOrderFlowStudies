@@ -54,7 +54,7 @@ from config.constants import (
     LONDON_CLOSE, PM_SESSION_START,
 )
 
-COMPRESSED_IB_THRESHOLD = 50.0
+COMPRESSED_IB_RATIO = 0.50     # IB < 50% of rolling avg = compressed (was 50 pts hardcoded)
 
 # --- Stop and Target Multipliers (of IB range) ---
 # Tight stops: below the pullback level, not all the way to IBL
@@ -62,7 +62,8 @@ STOP_FVG_BUFFER = 0.25         # Stop below FVG bottom + 25% IB buffer
 STOP_VWAP_BUFFER = 0.40        # Stop below VWAP + 40% IB buffer
 STOP_EMA_BUFFER = 0.40         # Stop below EMA + 40% IB buffer
 STOP_IBH_RETEST_BUFFER = 0.50  # Stop below IBH + 50% IB buffer
-STOP_MINIMUM_PTS = 15.0        # Minimum stop distance in points (avoids noise)
+STOP_MINIMUM_RATIO = 0.10     # Minimum stop = 10% of IB range (was 15 pts, ~10% of median IB)
+PRE_DELTA_RATIO = 3.0          # Reject if pre-delta sum < -3.0x IB range (was -500 hardcoded, ~3.2x median IB)
 
 # Targets
 TARGET_P_DAY = 1.5             # Conservative target on p_day
@@ -93,7 +94,17 @@ class TrendDayBull(StrategyBase):
         self._last_entry_price = None
         self._session_high = ib_high
 
-        self._compressed_ib = ib_range < COMPRESSED_IB_THRESHOLD
+        # Compressed IB: use rolling IB average if available
+        ib_history = session_context.get('ib_range_history', [])
+        if len(ib_history) >= 5:
+            avg_ib = sum(ib_history[-10:]) / len(ib_history[-10:])
+            self._compressed_ib = ib_range < avg_ib * COMPRESSED_IB_RATIO
+        else:
+            self._compressed_ib = ib_range < 50.0  # fallback for first sessions
+
+        # Regime gate: directional strategies need follow-through which
+        # doesn't exist in low-vol regimes (29% WR in Aug-Sep vs 75% Nov-Feb).
+        self._regime_allows = session_context.get('regime_volatility') != 'low'
 
         # Track recent swing low for stop placement
         self._recent_swing_low = ib_high  # starts at IBH, tracks lowest pullback
@@ -102,6 +113,9 @@ class TrendDayBull(StrategyBase):
         self._delta_history = []  # stores last N bars of delta values
 
     def on_bar(self, bar: pd.Series, bar_index: int, session_context: dict) -> Optional[Signal]:
+        if not self._regime_allows:
+            return None
+
         strength = session_context.get('trend_strength', 'weak')
         current_price = bar['close']
         bar_time = session_context.get('bar_time')
@@ -146,9 +160,9 @@ class TrendDayBull(StrategyBase):
         if strength == 'weak':
             return None
 
-        # Confidence check
+        # Confidence check (unified: 0.40 for trend strategies)
         trend_conf = session_context.get('trend_bull_confidence', 0.0)
-        if trend_conf < 0.375:
+        if trend_conf < 0.40:
             return None
 
         if bar_index - self._last_entry_bar < PYRAMID_COOLDOWN_BARS:
@@ -227,26 +241,13 @@ class TrendDayBull(StrategyBase):
                 # is driven by aggressive selling (pre-entry delta strongly negative).
                 # Diagnostic showed: losers had pre-10-bar delta < -500, winners > -100.
                 # This filters bearish-momentum pullbacks that look like bounces but fail.
+                # IB-scaled pre-delta momentum check
                 pre_delta_sum = sum(self._delta_history[:-1]) if len(self._delta_history) > 1 else 0
-                if pre_delta_sum < -500:
-                    # Strong selling pressure before this bar — skip
+                pre_delta_threshold = -self._ib_range * PRE_DELTA_RATIO
+                if pre_delta_sum < pre_delta_threshold:
                     return None
 
-                # --- Order Flow Quality Gate (Deep OF Study findings) ---
-                # The deep diagnostic (diagnostic_deep_orderflow.py) studied ALL
-                # order flow features at every entry bar across 62 sessions.
-                # Key findings:
-                #   volume_spike: Winners avg 1.36x, Losers avg 0.98x (signal=1.31)
-                #   delta_percentile: Winners avg 83rd, Losers avg 55th (signal=0.98)
-                #   imbalance_ratio: Winners avg 1.25, Losers avg 1.03 (signal=0.77)
-                #   delta_zscore: Winners avg 1.0, Losers avg 0.10 (signal=0.74)
-                #
-                # The 2026-02-13 loser had: delta=-99, pctl=25th, imb=0.871,
-                # vol_spike=0.77 — EVERY signal screamed "don't enter".
-                # These checks catch that loser without filtering any winner.
-                #
-                # Use order flow quality score: count how many signals are positive.
-                # Require at least 2 of 3 (belt-and-suspenders).
+                # Order Flow Quality Gate: 2-of-3 signals must be positive
                 delta_pctl = bar.get('delta_percentile', 50)
                 imbalance = bar.get('imbalance_ratio', 1.0)
                 vol_spike = bar.get('volume_spike', 1.0)
@@ -257,12 +258,12 @@ class TrendDayBull(StrategyBase):
                     (vol_spike >= 1.0) if not pd.isna(vol_spike) else True,
                 ])
                 if of_quality < 2:
-                    # Weak order flow: most signals show no buyer conviction
                     return None
 
+                min_stop_dist = self._ib_range * STOP_MINIMUM_RATIO
                 stop = vwap - (self._ib_range * STOP_VWAP_BUFFER)
-                stop = min(stop, current_price - STOP_MINIMUM_PTS)
-                if current_price - stop >= STOP_MINIMUM_PTS:
+                stop = min(stop, current_price - min_stop_dist)
+                if current_price - stop >= min_stop_dist:
                     return self._build_signal(
                         bar, bar_index, session_context,
                         entry_type='VWAP_PULLBACK',
@@ -300,9 +301,10 @@ class TrendDayBull(StrategyBase):
         if ema5 is not None and not pd.isna(ema5) and current_price > ema5:
             ema_dist = (current_price - ema5) / self._ib_range if self._ib_range > 0 else 999
             if ema_dist < 0.15 and (delta > 0 or has_fvg):
+                min_stop_dist = self._ib_range * STOP_MINIMUM_RATIO
                 stop = ema5 - (self._ib_range * 0.30)
-                stop = min(stop, current_price - STOP_MINIMUM_PTS)
-                if current_price - stop >= STOP_MINIMUM_PTS:
+                stop = min(stop, current_price - min_stop_dist)
+                if current_price - stop >= min_stop_dist:
                     return self._build_signal(
                         bar, bar_index, session_context,
                         entry_type=f'EMA5_PYRAMID_P{self._pyramid_count + 1}',
@@ -317,9 +319,10 @@ class TrendDayBull(StrategyBase):
         if vwap is not None and not pd.isna(vwap):
             if bar['low'] <= vwap <= bar['high'] and current_price > vwap:
                 if delta > 0 or has_fvg or has_fvg_15m:
+                    min_stop_dist = self._ib_range * STOP_MINIMUM_RATIO
                     stop = vwap - (self._ib_range * STOP_VWAP_BUFFER)
-                    stop = min(stop, current_price - STOP_MINIMUM_PTS)
-                    if current_price - stop >= STOP_MINIMUM_PTS:
+                    stop = min(stop, current_price - min_stop_dist)
+                    if current_price - stop >= min_stop_dist:
                         return self._build_signal(
                             bar, bar_index, session_context,
                             entry_type=f'VWAP_PYRAMID_P{self._pyramid_count + 1}',
