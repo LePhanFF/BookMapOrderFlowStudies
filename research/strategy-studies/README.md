@@ -1,6 +1,6 @@
 # Strategy Research — Master Reference
 
-**Last Updated**: 2026-03-01 (v3.2 — premarket acceptance conditions study)
+**Last Updated**: 2026-03-01 (v3.3 — OR Acceptance entry model diagnosis)
 **Instrument**: MNQ (Micro E-mini Nasdaq-100)
 **Data**: 259 RTH sessions, 2,000+ trades analyzed
 **Accounts**: 5 x TradeDay/Tradeify Lightning $150K
@@ -165,6 +165,8 @@
 
 **v2 optimization** (2026-02-27): Expanded from London-only (0 trades) to all reference levels, relaxed acceptance conditions. See [exploratory/2026.02.27-or-acceptance-optimization.md](exploratory/2026.02.27-or-acceptance-optimization.md).
 
+**v3 proposed** (2026-03-01): Entry model fix — limit retest at acceptance level instead of 50% retrace. Entries close to level (≤20 pts risk) = 96% WR. Current 50% retrace entries (avg 70 pts risk) = 44% WR. See [exploratory/2026.03.01-premarket-acceptance-conditions.md](exploratory/2026.03.01-premarket-acceptance-conditions.md).
+
 **Code**: [`strategy/or_acceptance.py`](../../strategy/or_acceptance.py)
 
 ---
@@ -212,6 +214,8 @@
 12. **Choppy premarket → strong acceptance**: High premarket chop score (>0.4) = 46.7% WR, PF 1.42. Low chop = 27.3% WR. Chop that resolves into acceptance is stronger than a trending premarket continuation.
 13. **LRLR trendline breaks are too rare (~10%) to use as an acceptance filter** and don't improve trade outcomes (33% WR with vs 45% without).
 14. **Post-London directional strength (0.53 vs 0.39)** is the best feature distinguishing acceptance from Judas opens.
+15. **OR Acceptance v2 entry model is the root cause of low WR** — 50% retrace puts entry 50-100 pts from the acceptance level. Entries ≤20 pts from level = 96% WR. Entries >60 pts = 15% WR. Fix: limit retest at the acceptance level after 2x 5-min acceptance.
+16. **BOTH sessions (Judas + Acceptance on different levels) lose money** — 25% WR, PF 0.58. Skip them.
 
 ---
 
@@ -222,6 +226,8 @@
 | P-day SHORT | 29% | Fights bullish skew + NQ long bias |
 | VWAP sweep-fail (any direction) | 45% | VWAP oscillation is noise |
 | 2R target on IB fades | 47% | Overshoots mean-reversion range |
+| OR Acceptance with wide stop (>60 pts) | 15% | Entry too far from acceptance level |
+| BOTH sessions (Judas+Accept diff levels) | 25% | Conflicting signals = noise |
 | Candle-extreme stops on retest entries | 5–14% | Stop is inside VA — always hits |
 | Any SHORT without extreme sweep filter | <40% | NQ mean-reverts up, not down |
 
@@ -303,5 +309,5 @@ research/strategy-studies/
 
 ---
 
-*Version: 3.2 — Premarket conditions study for OR Acceptance.*
+*Version: 3.3 — OR Acceptance entry model diagnosis + v3 proposed fix.*
 *Previous: v3.1 (OR Rev + Accept), v3.0 (reorganized), MASTER_INDEX.md (deprecated)*
