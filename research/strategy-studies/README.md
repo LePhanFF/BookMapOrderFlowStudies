@@ -1,6 +1,6 @@
 # Strategy Research — Master Reference
 
-**Last Updated**: 2026-02-27 (v3.1 — added OR Reversal + OR Acceptance)
+**Last Updated**: 2026-03-01 (v3.2 — premarket acceptance conditions study)
 **Instrument**: MNQ (Micro E-mini Nasdaq-100)
 **Data**: 259 RTH sessions, 2,000+ trades analyzed
 **Accounts**: 5 x TradeDay/Tradeify Lightning $150K
@@ -208,6 +208,10 @@
 8. **OR Reversal is the top performer** — 60.9% WR, PF 2.96, $2,720/mo. LONG direction dominates (75% WR).
 9. **OR Acceptance needed expanded levels** — London-only produced 0 trades; adding Asia H/L + PDH/PDL → 71 trades.
 10. **IB window (60 bars) beats EOR (30 bars) for acceptance** — 43.7% vs 40.7% WR, more time for true acceptance to establish.
+11. **Acceptance is the most common open type** (37% of sessions). 70% of the time, acceptance leads to continuation in the first 30 min (avg 101 pts).
+12. **Choppy premarket → strong acceptance**: High premarket chop score (>0.4) = 46.7% WR, PF 1.42. Low chop = 27.3% WR. Chop that resolves into acceptance is stronger than a trending premarket continuation.
+13. **LRLR trendline breaks are too rare (~10%) to use as an acceptance filter** and don't improve trade outcomes (33% WR with vs 45% without).
+14. **Post-London directional strength (0.53 vs 0.39)** is the best feature distinguishing acceptance from Judas opens.
 
 ---
 
@@ -268,7 +272,8 @@ research/strategy-studies/
 │   ├── 2026.02.24-ninjatrader-implementation-design.md
 │   └── backtest_results_research_strategies.py
 ├── exploratory/                     ← Early research + OR strategies
-│   ├── 2026.02.27-or-acceptance-optimization.md  ← OR Acceptance study (LATEST)
+│   ├── 2026.02.27-or-acceptance-optimization.md  ← OR Acceptance optimization
+│   ├── 2026.03.01-premarket-acceptance-conditions.md  ← Premarket study (LATEST)
 │   ├── TWO_HOUR_TRADER_STUDY.md
 │   ├── OPENING_RANGE_BREAKOUT_STUDY.md
 │   ├── TREND_FOLLOWING_BREAKOUT_STUDY.md
@@ -292,10 +297,11 @@ research/strategy-studies/
 | Pipeline Orchestrator | [`rockit-framework/orchestrator.py`](../../rockit-framework/orchestrator.py) | — |
 | OR Reversal (Judas Swing) | [`strategy/or_reversal.py`](../../strategy/or_reversal.py) | — |
 | OR Acceptance (Break+Hold) | [`strategy/or_acceptance.py`](../../strategy/or_acceptance.py) | — |
+| Premarket Study | [`scripts/study_premarket_acceptance.py`](../../scripts/study_premarket_acceptance.py) | — |
 | Dual Order Flow (Eval) | [`strategy/signal.py`](../../strategy/signal.py) | `DualOrderFlow_Evaluation.cs` |
 | Dual Order Flow (Funded) | [`strategy/signal.py`](../../strategy/signal.py) | `DualOrderFlow_Funded.cs` |
 
 ---
 
-*Version: 3.1 — Added OR Reversal + OR Acceptance strategies. OR Acceptance optimized from 0→71 trades.*
-*Previous: v3.0 (reorganized), MASTER_INDEX.md (deprecated)*
+*Version: 3.2 — Premarket conditions study for OR Acceptance.*
+*Previous: v3.1 (OR Rev + Accept), v3.0 (reorganized), MASTER_INDEX.md (deprecated)*
