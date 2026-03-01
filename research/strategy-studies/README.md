@@ -1,6 +1,6 @@
 # Strategy Research — Master Reference
 
-**Last Updated**: 2026-03-01 (v3.4 — OR Acceptance v3 entry model, v2 deprecated)
+**Last Updated**: 2026-03-01 (v3.5 — OR Acceptance v3 backtested: 55% WR, PF 1.87, $1,747/mo)
 **Instrument**: MNQ (Micro E-mini Nasdaq-100)
 **Data**: 259 RTH sessions, 2,000+ trades analyzed
 **Accounts**: 5 x TradeDay/Tradeify Lightning $150K
@@ -17,8 +17,8 @@
 | **Balance Day IBL Fade** (B-day + first touch) | Balance days, IBL touch | 3.4 | 82% | 9.35 | **$1,730** | [balance-day-edge-fade/](balance-day-edge-fade/) |
 | **20P IB Extension** (2xATR + 2R) | IB breakout continuation | 3.7 | 45.5% | 1.78 | **$496** | [20p-rule/](20p-rule/) |
 | **OR Reversal** (Judas Swing) | Sweep + reversal at open | 9.6 | 60.9% | 2.96 | **$2,720** | [exploratory/](exploratory/) |
-| **OR Acceptance v3** (Break + Hold) | Level break + limit retest | 5.9 | v2: 43.7% → v3: ~96%* | v2: 1.32 | **v3 pending** | [exploratory/](exploratory/) |
-| **Combined** | — | **~26** | — | — | **~$7,132** | — |
+| **OR Acceptance v3** (Break + Hold) | Level break + limit retest | 10.1 | 55.4% | 1.87 | **$1,747** | [exploratory/](exploratory/) |
+| **Combined** | — | **~31** | — | — | **~$8,615** | — |
 
 **For evaluation passing** (fast, aggressive): Use [Dual Order Flow](dual-order-flow/) at 31 MNQ — $1,027/day, pass $9K in ~9 days.
 
@@ -158,8 +158,19 @@
 | **Direction** | Both | Both |
 | **Stop** | Acceptance level ± 0.5 ATR buffer (~15 pts risk) | Acceptance level + 0.5 ATR (avg 70 pts risk) |
 | **Target** | 2R (~30 pts) | 2R (~140 pts) |
-| **Filter** | Skip BOTH sessions (Judas + Accept on diff levels) | None |
-| **Window** | 9:30–10:30 AM | Full IB (9:30–10:30) |
+| **Filter** | Skip BOTH sessions (EOR swept levels on both sides) | None |
+| **Window** | 9:30–10:30 AM (IB bars) | Full IB (9:30–10:30) |
+| **Frequency** | 10.1 trades/month | 5.8 trades/month |
+| **Win Rate** | **55.4%** | 43.7% |
+| **Profit Factor** | **1.87** | 1.32 |
+| **Monthly P&L** | **$1,747** (5 MNQ) | $257 |
+
+**v3 backtest results** (259 sessions, MNQ):
+- 121 trades, 67W/54L, Expectancy $173/trade
+- LONG: 68 trades, 54.4% WR, PF 1.74, $10,089 net
+- SHORT: 53 trades, 56.6% WR, PF 2.06, $10,879 net
+- Max Drawdown: $2,993 (1.75%), Sharpe 4.91
+- Both directions profitable — SHORT has higher PF (unusual for NQ)
 
 **v2 was broken — entry model root cause** (2026-03-01):
 
@@ -169,27 +180,25 @@
 | 20–60 pts | 6 | 17% | 0.34 | −$1,238 |
 | >60 pts (chasing) | 40 | 15% | 0.40 | −$4,839 |
 
-The 50% retrace entry put you 50-100 pts from the acceptance level. Tight entries at the level dominate.
-
-**v3 stats**: Pending proper limit-fill simulation on 1-min bars (does price actually retrace to the level after 2x 5-min acceptance?). The 25 trades with ≤20 pts risk show 96% WR — v3 targets this entry profile systematically.
+v3 systematically targets entries at the level. Limit fill simulation confirms 47% fill rate (121/259 sessions).
 
 **Head-to-head vs OR Reversal:**
 
-| Metric | OR Reversal | OR Acceptance v2 |
-|:---|:---|:---|
-| Trades | 115 (9.3/mo) | 71 (5.8/mo) |
-| Win Rate | **60.9%** | 43.7% |
-| Profit Factor | **2.96** | 1.32 |
-| Expectancy | **$284/trade** | $45/trade |
-| Monthly P&L | **$2,646/mo** | $257/mo |
+| Metric | OR Reversal | OR Accept v2 | **OR Accept v3** |
+|:---|:---|:---|:---|
+| Trades | 115 (9.3/mo) | 71 (5.8/mo) | **121 (10.1/mo)** |
+| Win Rate | **60.9%** | 43.7% | **55.4%** |
+| Profit Factor | **2.96** | 1.32 | **1.87** |
+| Expectancy | **$284/trade** | $45/trade | **$173/trade** |
+| Monthly P&L | **$2,646/mo** | $257/mo | **$1,747/mo** |
 
-OR Reversal is 6x more profitable per trade. OR Acceptance v3 with level-retest entries should close this gap.
+v3 closes the gap from 6x worse to 1.6x worse per trade. Combined OR Rev + Accept v3 = ~$4,467/mo.
 
-**BOTH sessions** (Judas sweep + acceptance on different levels): 25% WR, PF 0.58, −$993. **Skip these.**
+**BOTH sessions** (EOR swept levels on both sides): Skip. v2 showed 25% WR, PF 0.58.
 
-**Studies**: [v2 optimization](exploratory/2026.02.27-or-acceptance-optimization.md) | [v3 entry diagnosis](exploratory/2026.03.01-premarket-acceptance-conditions.md)
+**Studies**: [v2 optimization](exploratory/2026.02.27-or-acceptance-optimization.md) | [v3 entry diagnosis + backtest](exploratory/2026.03.01-premarket-acceptance-conditions.md)
 
-**Code**: [`strategy/or_acceptance.py`](../../strategy/or_acceptance.py) (still v2 — v3 implementation pending)
+**Code**: [`strategy/or_acceptance.py`](../../strategy/or_acceptance.py) (v3 — limit retest entry)
 
 ---
 
@@ -228,7 +237,7 @@ OR Reversal is 6x more profitable per trade. OR Acceptance v3 with level-retest 
 4. **Stop placement matters more than entry depth** — VA-edge stops (58–66% WR) vs candle-extreme (5–14%).
 5. **Balance days are 43% of sessions** and detectable at 10:30 via IB POC shape.
 6. **DPOC stabilizing regime** confirms balance rotation — use as secondary filter, not primary.
-7. **Five strategies are complementary** — 80P (VA days), B-Day Fade (balance), 20P (breakout), OR Rev (sweep), OR Accept v3 (break + limit retest).
+7. **Five strategies are complementary** — 80P (VA days), B-Day Fade (balance), 20P (breakout), OR Rev (sweep), OR Accept v3 (break + limit retest). Combined ~$8,615/mo.
 8. **OR Reversal is the top performer** — 60.9% WR, PF 2.96, $2,720/mo. LONG direction dominates (75% WR).
 9. **OR Acceptance needed expanded levels** — London-only produced 0 trades; adding Asia H/L + PDH/PDL → 71 trades.
 10. **IB window (60 bars) beats EOR (30 bars) for acceptance** — 43.7% vs 40.7% WR, more time for true acceptance to establish.
@@ -236,7 +245,7 @@ OR Reversal is 6x more profitable per trade. OR Acceptance v3 with level-retest 
 12. **Choppy premarket → strong acceptance**: High premarket chop score (>0.4) = 46.7% WR, PF 1.42. Low chop = 27.3% WR. Chop that resolves into acceptance is stronger than a trending premarket continuation.
 13. **LRLR trendline breaks are too rare (~10%) to use as an acceptance filter** and don't improve trade outcomes (33% WR with vs 45% without).
 14. **Post-London directional strength (0.53 vs 0.39)** is the best feature distinguishing acceptance from Judas opens.
-15. **OR Acceptance v2 entry model is the root cause of low WR** — 50% retrace puts entry 50-100 pts from the acceptance level. Entries ≤20 pts from level = 96% WR. Entries >60 pts = 15% WR. Fix: limit retest at the acceptance level after 2x 5-min acceptance.
+15. **OR Acceptance v3 confirms the fix**: limit retest at the acceptance level after 2x 5-min acceptance → 55.4% WR, PF 1.87, $1,747/mo (vs v2: 43.7% WR, $257/mo). Limit fill rate = 47% (121/259 sessions).
 16. **BOTH sessions (Judas + Acceptance on different levels) lose money** — 25% WR, PF 0.58. Skip them.
 
 ---
@@ -331,5 +340,5 @@ research/strategy-studies/
 
 ---
 
-*Version: 3.4 — OR Acceptance v3 entry model (limit retest), v2 deprecated.*
-*Previous: v3.3 (diagnosis), v3.1 (OR Rev + Accept), v3.0 (reorganized), MASTER_INDEX.md (deprecated)*
+*Version: 3.5 — OR Acceptance v3 backtested: 121 trades, 55% WR, PF 1.87, $1,747/mo.*
+*Previous: v3.4 (v3 entry model), v3.3 (diagnosis), v3.1 (OR Rev + Accept), v3.0 (reorganized)*

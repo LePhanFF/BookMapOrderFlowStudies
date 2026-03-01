@@ -1,32 +1,37 @@
 """
-Strategy: Opening Range Acceptance (LONG and SHORT) — v2 Relaxed
+Strategy: Opening Range Acceptance (LONG and SHORT) — v3 Level Retest
 
 Trades directional continuation when price BREAKS a key level at the open
 and HOLDS it — NOT a fake sweep. This is the opposite of the Judas swing:
-instead of entering on the reversal, we enter on the 50% retest of the
-continuation move after acceptance.
+instead of entering on the reversal, we enter AT the acceptance level via
+a limit order on the retest pullback.
 
-v2 changes (2026-02-27):
-  - Expanded beyond London-only to ALL reference levels (ON H/L, PDH/PDL, Asia H/L)
-  - Relaxed acceptance: allow wick violations, close-percentage check, buffer zone
-  - Configurable acceptance window (OR/EOR/IB)
-  - Pick closest accepted level when multiple qualify
-  - Diagnostic funnel showed 139/259 sessions pass relaxed acceptance vs 0 strict
+v3 changes (2026-03-01):
+  - Entry: limit order AT the acceptance level on retest (not 50% retrace)
+  - Acceptance: 2x consecutive 5-min closes beyond the level
+  - Stop: acceptance level ± 0.5 ATR buffer (~15 pts risk vs ~70 pts in v2)
+  - Target: 2R (~30 pts)
+  - Filter: Skip BOTH sessions (Judas sweep + acceptance on different levels)
+  - Risk reduced ~5x: avg 15 pts vs avg 70 pts in v2
 
-Pattern (SHORT):
-  1. Price opens/drives below a key reference level in the first 15-30 min
-  2. Relaxed acceptance: >=70% of EOR closes below level, <=5 wick violations,
-     max spike <=10% of EOR range above level
-  3. Price bounces 50% back toward the accepted level
-  4. At the 50% level, price turns back DOWN with neg delta → ENTER SHORT
-  5. Stop: above acceptance level + 0.5 ATR buffer
-  6. Target: 2R
+v2 was broken — root cause (2026-03-01 study):
+  - 50% retrace entry put entries 50-100 pts from the acceptance level
+  - Entries <=20 pts from level = 96% WR. Entries >60 pts = 15% WR.
+  - v3 systematically targets the tight-entry profile.
 
-Pattern (LONG): Mirror for acceptance above a key level.
+Pattern (LONG):
+  1. 9:30-10:30: Monitor 5-min bars against key levels
+  2. Acceptance: 2 consecutive 5-min closes ABOVE the level
+  3. Entry: Limit BUY at the acceptance level on retest pullback
+  4. Stop: Acceptance level - 0.5 ATR buffer (~15 pts)
+  5. Target: 2R (~30 pts)
+  6. Filter: Skip if both sides of EOR swept different levels (BOTH session)
+
+Pattern (SHORT): Mirror for acceptance below a key level.
 
 Key distinction from Judas swing:
   - Judas:      EOR extreme SPIKES beyond a level (fake move), price REVERSES
-  - Acceptance: EOR largely stays on one side of a level (true break), continuation
+  - Acceptance: Price breaks and HOLDS beyond a level, continuation
 """
 
 from datetime import time as _time
@@ -43,21 +48,21 @@ EOR_BARS = 30      # Extended OR = first 30 bars (9:30-9:59)
 IB_BARS = 60       # Initial Balance = first 60 bars (9:30-10:29)
 
 # ── Risk Constants ─────────────────────────────────────────────
-MIN_RISK_RATIO = 0.03    # Min risk = 3% of EOR range
-MAX_RISK_RATIO = 1.3     # Max risk = 130% of EOR range
 ATR_PERIOD = 14
 ATR_STOP_MULT = 0.5      # Stop buffer beyond acceptance level (in ATR units)
+MIN_RISK_PTS = 3          # Minimum risk in points (noise floor)
+MAX_RISK_PTS = 40         # Maximum risk in points (cap for ATR spikes)
 
-# ── Relaxed Acceptance Parameters ──────────────────────────────
-# Sweep winner: IB-window (60 bars) + aggressive relaxation
-# 71 trades, 43.7% WR, PF 1.32, $3,173 net, MaxDD $2,845
-MAX_WICK_VIOLATIONS = 5       # Bars allowed to spike past acceptance level
-CLOSE_ACCEPTANCE_PCT = 0.70   # 70% of check-window closes must be on correct side
-ACCEPTANCE_BUFFER_PCT = 0.10  # Max spike past level = 10% of EOR range
-ACCEPTANCE_WINDOW = 'IB'      # 'OR' (15 bars), 'EOR' (30 bars), or 'IB' (60 bars)
+# ── v3 Acceptance Parameters ──────────────────────────────────
+ACCEPT_5M_BARS = 2        # 2 consecutive 5-min closes for acceptance confirmation
+RETEST_WINDOW = 30        # Max 1-min bars after acceptance to wait for limit fill
+
+# ── BOTH Session Filter ───────────────────────────────────────
+SWEEP_THRESHOLD_RATIO = 0.17  # Matching OR Reversal sweep detection threshold
 
 
 def _compute_atr14(bars: pd.DataFrame, n: int = ATR_PERIOD) -> float:
+    """Compute ATR(14) from OHLC bars. Falls back to mean H-L if insufficient data."""
     if len(bars) < 3:
         return float((bars['high'] - bars['low']).mean()) if len(bars) > 0 else 20.0
     h = bars['high']
@@ -68,78 +73,35 @@ def _compute_atr14(bars: pd.DataFrame, n: int = ATR_PERIOD) -> float:
     return float(atr) if not pd.isna(atr) else float((h - l).mean())
 
 
-def _check_acceptance(bars: pd.DataFrame, level: float, direction: str,
-                      eor_range: float) -> Tuple[bool, int, float, float]:
-    """Check relaxed acceptance condition.
-
-    Returns:
-        (passed, violations, close_pct, max_spike)
-    """
-    n = len(bars)
-    if n == 0:
-        return False, 0, 0.0, 0.0
-
-    if direction == 'SHORT':
-        violations = int((bars['high'] > level).sum())
-        closes_correct = int((bars['close'] < level).sum())
-        max_spike = float(bars['high'].max()) - level
-    else:  # LONG
-        violations = int((bars['low'] < level).sum())
-        closes_correct = int((bars['close'] > level).sum())
-        max_spike = level - float(bars['low'].min())
-
-    close_pct = closes_correct / n
-    buffer = ACCEPTANCE_BUFFER_PCT * eor_range
-
-    passed = (violations <= MAX_WICK_VIOLATIONS
-              and close_pct >= CLOSE_ACCEPTANCE_PCT
-              and max_spike <= buffer)
-    return passed, violations, close_pct, max_spike
-
-
-def _find_best_accepted_level(
-    bars: pd.DataFrame,
-    candidates: List[Tuple[str, float]],
-    direction: str,
-    eor_range: float,
-) -> Tuple[Optional[float], Optional[str]]:
-    """Find the closest accepted level from candidates.
-
-    Checks relaxed acceptance for each candidate level and returns the one
-    with the highest close_pct (strongest acceptance). Ties broken by
-    fewest violations.
-    """
-    best_level = None
-    best_name = None
-    best_close_pct = 0.0
-    best_violations = float('inf')
-
-    for name, lvl in candidates:
-        if lvl is None:
+def _resample_to_5m(bars_1m: pd.DataFrame) -> pd.DataFrame:
+    """Resample 1-min bars to 5-min OHLCV bars."""
+    groups = []
+    for i in range(0, len(bars_1m), 5):
+        chunk = bars_1m.iloc[i:i + 5]
+        if len(chunk) == 0:
             continue
-        passed, violations, close_pct, max_spike = _check_acceptance(
-            bars, lvl, direction, eor_range)
-        if not passed:
-            continue
-        # Prefer highest close_pct, then fewest violations
-        if (close_pct > best_close_pct or
-                (close_pct == best_close_pct and violations < best_violations)):
-            best_close_pct = close_pct
-            best_violations = violations
-            best_level = lvl
-            best_name = name
-
-    return best_level, best_name
+        bar_5m = {
+            'open': chunk.iloc[0]['open'],
+            'high': chunk['high'].max(),
+            'low': chunk['low'].min(),
+            'close': chunk.iloc[-1]['close'],
+        }
+        for col in ('delta', 'vol_delta'):
+            if col in chunk.columns:
+                bar_5m[col] = chunk[col].fillna(0).sum()
+        if 'timestamp' in chunk.columns:
+            bar_5m['timestamp'] = chunk.iloc[-1]['timestamp']
+        groups.append(bar_5m)
+    return pd.DataFrame(groups)
 
 
 class ORAcceptanceStrategy(StrategyBase):
     """
-    Key level acceptance: break and hold above/below a reference level at the open.
-    Enter on 50% retest of the acceptance move with delta confirmation.
+    v3: 2x 5-min acceptance + limit retest at acceptance level.
 
-    v2: Checks London H/L, Asia H/L, overnight H/L, and PDH/PDL.
-    Uses relaxed acceptance (wick violations, close%, buffer) to generate
-    20-40 trades across 260 sessions instead of 0.
+    Scans IB bars for level acceptance on 5-min timeframe, then checks
+    if price retests the level (limit fill simulation) on 1-min bars.
+    Skip BOTH sessions where EOR swept levels on both sides.
     """
 
     @property
@@ -163,11 +125,7 @@ class ORAcceptanceStrategy(StrategyBase):
         if ib_bars is None or len(ib_bars) < EOR_BARS:
             return
 
-        # OR = first 15 bars, EOR = first 30 bars
-        or_bars = ib_bars.iloc[:OR_BARS]
-        or_high = or_bars['high'].max()
-        or_low = or_bars['low'].min()
-
+        # EOR for range measurement
         eor_bars = ib_bars.iloc[:EOR_BARS]
         eor_high = eor_bars['high'].max()
         eor_low = eor_bars['low'].min()
@@ -176,221 +134,225 @@ class ORAcceptanceStrategy(StrategyBase):
         if eor_range < 10:
             return
 
-        max_risk = eor_range * MAX_RISK_RATIO
-
-        # ── Select acceptance window ────────────────────────────
-        if ACCEPTANCE_WINDOW == 'OR':
-            check_bars = ib_bars.iloc[:OR_BARS]
-        elif ACCEPTANCE_WINDOW == 'IB':
-            check_bars = ib_bars
-        else:  # 'EOR' (default)
-            check_bars = eor_bars
+        atr14 = _compute_atr14(ib_bars)
 
         # ── Gather all reference levels ─────────────────────────
         london_high = session_context.get('london_high')
         london_low = session_context.get('london_low')
         asia_high = session_context.get('asia_high')
         asia_low = session_context.get('asia_low')
-        overnight_high = session_context.get('overnight_high') or session_context.get('prior_session_high')
-        overnight_low = session_context.get('overnight_low') or session_context.get('prior_session_low')
         pdh = session_context.get('pdh') or session_context.get('prior_session_high')
         pdl = session_context.get('pdl') or session_context.get('prior_session_low')
-        prior_va_high = session_context.get('prior_va_high') or session_context.get('prior_vp_vah')
-        prior_va_low = session_context.get('prior_va_low') or session_context.get('prior_vp_val')
-        prior_va_poc = session_context.get('prior_va_poc') or session_context.get('prior_vp_poc')
+        overnight_high = session_context.get('overnight_high') or session_context.get('prior_session_high')
+        overnight_low = session_context.get('overnight_low') or session_context.get('prior_session_low')
 
-        # SHORT candidates: price below these levels = SHORT acceptance
-        short_candidates = []
-        if london_low: short_candidates.append(('LDN_LOW', london_low))
-        if asia_low: short_candidates.append(('ASIA_LOW', asia_low))
-        if pdl: short_candidates.append(('PDL', pdl))
-
-        # LONG candidates: price above these levels = LONG acceptance
+        # LONG candidates (acceptance above these levels)
         long_candidates = []
-        if london_high: long_candidates.append(('LDN_HIGH', london_high))
-        if asia_high: long_candidates.append(('ASIA_HIGH', asia_high))
-        if pdh: long_candidates.append(('PDH', pdh))
+        if london_high:
+            long_candidates.append(('LDN_HIGH', london_high))
+        if asia_high:
+            long_candidates.append(('ASIA_HIGH', asia_high))
+        if pdh:
+            long_candidates.append(('PDH', pdh))
 
-        # ── Directional bias score ──────────────────────────────
-        bias = 0
-        if asia_low and eor_low < asia_low:       bias += 1
-        if london_low and eor_low < london_low:   bias += 1
-        if pdl and eor_low > pdl:                  bias += 1
-        if prior_va_low and eor_low > prior_va_low: bias += 1
-        if prior_va_poc and eor_bars['close'].iloc[0] > prior_va_poc: bias += 1
+        # SHORT candidates (acceptance below these levels)
+        short_candidates = []
+        if london_low:
+            short_candidates.append(('LDN_LOW', london_low))
+        if asia_low:
+            short_candidates.append(('ASIA_LOW', asia_low))
+        if pdl:
+            short_candidates.append(('PDL', pdl))
 
-        if asia_high and eor_high > asia_high:     bias -= 1
-        if london_high and eor_high > london_high: bias -= 1
-        if pdh and eor_high < pdh:                 bias -= 1
-        if prior_va_high and eor_high < prior_va_high: bias -= 1
-        if prior_va_poc and eor_bars['close'].iloc[0] < prior_va_poc: bias -= 1
+        # ── BOTH filter: skip if EOR swept levels on both sides ──
+        sweep_threshold = eor_range * SWEEP_THRESHOLD_RATIO
+        high_candidates_all = []
+        if overnight_high:
+            high_candidates_all.append(overnight_high)
+        if pdh:
+            high_candidates_all.append(pdh)
+        if asia_high:
+            high_candidates_all.append(asia_high)
+        if london_high:
+            high_candidates_all.append(london_high)
 
-        # CVD for order flow confirmation
-        deltas = ib_bars['delta'] if 'delta' in ib_bars.columns else ib_bars.get('vol_delta', pd.Series(dtype=float))
-        if deltas is not None and len(deltas) > 0:
-            deltas = deltas.fillna(0)
-            cvd_series = deltas.cumsum()
-        else:
-            cvd_series = None
+        low_candidates_all = []
+        if overnight_low:
+            low_candidates_all.append(overnight_low)
+        if pdl:
+            low_candidates_all.append(pdl)
+        if asia_low:
+            low_candidates_all.append(asia_low)
+        if london_low:
+            low_candidates_all.append(london_low)
 
-        atr14 = _compute_atr14(ib_bars)
-        cvd_at_start = cvd_series.iloc[0] if cvd_series is not None else None
+        high_swept = any(
+            abs(eor_high - lvl) <= sweep_threshold
+            for lvl in high_candidates_all
+        )
+        low_swept = any(
+            abs(eor_low - lvl) <= sweep_threshold
+            for lvl in low_candidates_all
+        )
 
-        # ==========================================
-        # ACCEPTANCE SHORT: price held below a key level
-        # ==========================================
-        if bias <= 0:
-            acceptance_level, acceptance_name = _find_best_accepted_level(
-                check_bars, short_candidates, 'SHORT', eor_range)
+        if high_swept and low_swept:
+            return  # BOTH session — skip
 
-            if acceptance_level is not None:
-                self._try_short_entry(
-                    ib_bars, acceptance_level, acceptance_name, bias,
-                    atr14, eor_range, max_risk, cvd_series, cvd_at_start)
+        # ── Resample IB bars to 5-min ─────────────────────────────
+        bars_5m = _resample_to_5m(ib_bars)
 
-        # ==========================================
-        # ACCEPTANCE LONG: price held above a key level
-        # ==========================================
-        if self._cached_signal is None and bias >= 0:
-            acceptance_level, acceptance_name = _find_best_accepted_level(
-                check_bars, long_candidates, 'LONG', eor_range)
-
-            if acceptance_level is not None:
-                self._try_long_entry(
-                    ib_bars, acceptance_level, acceptance_name, bias,
-                    atr14, eor_range, max_risk, cvd_series, cvd_at_start)
-
-    def _try_short_entry(self, ib_bars, acceptance_level, acceptance_name,
-                         bias, atr14, eor_range, max_risk, cvd_series, cvd_at_start):
-        """Scan IB bars for a SHORT entry after acceptance below a level."""
-        ib_low_price = ib_bars['low'].min()
-        fifty_pct = ib_low_price + (acceptance_level - ib_low_price) * 0.50
-
-        in_below = False
-        for j in range(1, min(60, len(ib_bars))):
-            bar = ib_bars.iloc[j]
-            price = bar['close']
-            prev_price = ib_bars.iloc[j - 1]['close']
-
-            if price < acceptance_level:
-                in_below = True
-            if not in_below:
-                continue
-            if price >= acceptance_level:
-                break
-
-            entry_lo = fifty_pct - atr14 * 0.5
-            entry_hi = fifty_pct + atr14 * 0.5
-            if not (entry_lo <= price <= entry_hi):
-                continue
-
-            if price >= prev_price:
-                continue
-
-            delta = bar.get('delta', bar.get('vol_delta', 0))
-            if pd.isna(delta):
-                delta = 0
-            cvd_at_entry = cvd_series.loc[ib_bars.index[j]] if cvd_series is not None else None
-            cvd_declining = (cvd_at_entry is not None and cvd_at_start is not None
-                             and cvd_at_entry < cvd_at_start)
-            if delta >= 0 and not cvd_declining:
-                continue
-
-            stop = acceptance_level + ATR_STOP_MULT * atr14
-            risk = stop - price
-            if risk < eor_range * MIN_RISK_RATIO or risk > max_risk:
-                continue
-            target = price - 2 * risk
-
-            bar_ts = bar.get('timestamp', bar.name) if hasattr(bar, 'name') else bar.get('timestamp')
+        # ── Try LONG acceptance first ─────────────────────────────
+        entry = self._find_v3_entry(
+            ib_bars, bars_5m, long_candidates, 'LONG', atr14)
+        if entry is not None:
             self._cached_signal = Signal(
-                timestamp=bar_ts,
-                direction='SHORT',
-                entry_price=price,
-                stop_price=stop,
-                target_price=target,
-                strategy_name=self.name,
-                setup_type='OR_ACCEPTANCE_SHORT',
-                day_type='neutral',
-                trend_strength='moderate',
-                confidence='high',
-                metadata={
-                    'acceptance_level': acceptance_level,
-                    'acceptance_name': acceptance_name,
-                    'fifty_pct_level': fifty_pct,
-                    'ib_low': ib_low_price,
-                    'atr14': atr14,
-                    'bias_score': bias,
-                    'cvd_declining': cvd_declining,
-                },
-            )
-            break
-
-    def _try_long_entry(self, ib_bars, acceptance_level, acceptance_name,
-                        bias, atr14, eor_range, max_risk, cvd_series, cvd_at_start):
-        """Scan IB bars for a LONG entry after acceptance above a level."""
-        ib_high_price = ib_bars['high'].max()
-        fifty_pct = ib_high_price - (ib_high_price - acceptance_level) * 0.50
-
-        in_above = False
-        for j in range(1, min(60, len(ib_bars))):
-            bar = ib_bars.iloc[j]
-            price = bar['close']
-            prev_price = ib_bars.iloc[j - 1]['close']
-
-            if price > acceptance_level:
-                in_above = True
-            if not in_above:
-                continue
-            if price <= acceptance_level:
-                break
-
-            entry_lo = fifty_pct - atr14 * 0.5
-            entry_hi = fifty_pct + atr14 * 0.5
-            if not (entry_lo <= price <= entry_hi):
-                continue
-
-            if price <= prev_price:
-                continue
-
-            delta = bar.get('delta', bar.get('vol_delta', 0))
-            if pd.isna(delta):
-                delta = 0
-            cvd_at_entry = cvd_series.loc[ib_bars.index[j]] if cvd_series is not None else None
-            cvd_rising = (cvd_at_entry is not None and cvd_at_start is not None
-                          and cvd_at_entry > cvd_at_start)
-            if delta <= 0 and not cvd_rising:
-                continue
-
-            stop = acceptance_level - ATR_STOP_MULT * atr14
-            risk = price - stop
-            if risk < eor_range * MIN_RISK_RATIO or risk > max_risk:
-                continue
-            target = price + 2 * risk
-
-            bar_ts = bar.get('timestamp', bar.name) if hasattr(bar, 'name') else bar.get('timestamp')
-            self._cached_signal = Signal(
-                timestamp=bar_ts,
+                timestamp=entry['bar_ts'],
                 direction='LONG',
-                entry_price=price,
-                stop_price=stop,
-                target_price=target,
+                entry_price=entry['entry_price'],
+                stop_price=entry['stop'],
+                target_price=entry['target'],
                 strategy_name=self.name,
                 setup_type='OR_ACCEPTANCE_LONG',
                 day_type='neutral',
                 trend_strength='moderate',
                 confidence='high',
                 metadata={
-                    'acceptance_level': acceptance_level,
-                    'acceptance_name': acceptance_name,
-                    'fifty_pct_level': fifty_pct,
-                    'ib_high': ib_high_price,
+                    'acceptance_level': entry['level'],
+                    'acceptance_name': entry['level_name'],
                     'atr14': atr14,
-                    'bias_score': bias,
-                    'cvd_rising': cvd_rising,
+                    'risk_pts': entry['risk'],
+                    'version': 'v3',
                 },
             )
-            break
+            return
+
+        # ── Try SHORT acceptance ──────────────────────────────────
+        entry = self._find_v3_entry(
+            ib_bars, bars_5m, short_candidates, 'SHORT', atr14)
+        if entry is not None:
+            self._cached_signal = Signal(
+                timestamp=entry['bar_ts'],
+                direction='SHORT',
+                entry_price=entry['entry_price'],
+                stop_price=entry['stop'],
+                target_price=entry['target'],
+                strategy_name=self.name,
+                setup_type='OR_ACCEPTANCE_SHORT',
+                day_type='neutral',
+                trend_strength='moderate',
+                confidence='high',
+                metadata={
+                    'acceptance_level': entry['level'],
+                    'acceptance_name': entry['level_name'],
+                    'atr14': atr14,
+                    'risk_pts': entry['risk'],
+                    'version': 'v3',
+                },
+            )
+
+    def _find_v3_entry(self, ib_bars, bars_5m, candidates, direction, atr14):
+        """Find a v3 entry: 2x 5-min acceptance + limit fill at level.
+
+        Checks each candidate level for:
+          1. 2 consecutive 5-min closes beyond the level (acceptance)
+          2. Price retest at the level on 1-min bars (limit fill)
+
+        Returns dict with entry details, or None.
+        """
+        best_entry = None
+        best_fill_idx = float('inf')
+
+        for name, level in candidates:
+            if level is None:
+                continue
+
+            # Check 2x consecutive 5-min closes beyond the level
+            accept_idx = self._check_5m_acceptance(bars_5m, level, direction)
+            if accept_idx < 0:
+                continue
+
+            # Convert 5-min index to 1-min start index (first bar after acceptance)
+            accept_1m_start = (accept_idx + 1) * 5
+            if accept_1m_start >= len(ib_bars):
+                continue
+
+            # Check limit fill: does price retest the level?
+            fill_idx = self._check_limit_fill(
+                ib_bars, level, direction, accept_1m_start)
+            if fill_idx < 0:
+                continue
+
+            # Compute risk
+            risk = ATR_STOP_MULT * atr14
+            if risk < MIN_RISK_PTS or risk > MAX_RISK_PTS:
+                continue
+
+            # Pick earliest fill across all candidate levels
+            if fill_idx < best_fill_idx:
+                best_fill_idx = fill_idx
+
+                entry_price = level
+                if direction == 'LONG':
+                    stop = level - risk
+                    target = level + 2 * risk
+                else:
+                    stop = level + risk
+                    target = level - 2 * risk
+
+                bar = ib_bars.iloc[fill_idx]
+                bar_ts = (bar.get('timestamp', bar.name)
+                          if hasattr(bar, 'name')
+                          else bar.get('timestamp'))
+
+                best_entry = {
+                    'entry_price': entry_price,
+                    'stop': stop,
+                    'target': target,
+                    'risk': risk,
+                    'level': level,
+                    'level_name': name,
+                    'bar_ts': bar_ts,
+                }
+
+        return best_entry
+
+    def _check_5m_acceptance(self, bars_5m, level, direction,
+                              n_bars=ACCEPT_5M_BARS):
+        """Check for n consecutive 5-min closes beyond level.
+
+        Returns: index of the last accepted 5-min bar, or -1.
+        """
+        consecutive = 0
+        for i in range(len(bars_5m)):
+            close = bars_5m.iloc[i]['close']
+            if direction == 'LONG' and close > level:
+                consecutive += 1
+            elif direction == 'SHORT' and close < level:
+                consecutive += 1
+            else:
+                consecutive = 0
+
+            if consecutive >= n_bars:
+                return i
+        return -1
+
+    def _check_limit_fill(self, ib_bars, level, direction, start_idx,
+                           max_bars=RETEST_WINDOW):
+        """Check if price retests the acceptance level (limit fill simulation).
+
+        LONG: limit buy at level -> need bar low <= level (pullback to level)
+        SHORT: limit sell at level -> need bar high >= level (bounce to level)
+
+        Returns: index of the fill bar, or -1.
+        """
+        end_idx = min(start_idx + max_bars, len(ib_bars))
+        for i in range(start_idx, end_idx):
+            bar = ib_bars.iloc[i]
+            if direction == 'LONG' and bar['low'] <= level:
+                return i
+            elif direction == 'SHORT' and bar['high'] >= level:
+                return i
+        return -1
 
     def on_bar(self, bar: pd.Series, bar_index: int, session_context: dict) -> Optional[Signal]:
         if self._cached_signal is not None and not self._signal_emitted:
