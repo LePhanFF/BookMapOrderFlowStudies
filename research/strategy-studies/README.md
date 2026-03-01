@@ -1,6 +1,6 @@
 # Strategy Research — Master Reference
 
-**Last Updated**: 2026-03-01 (v3.3 — OR Acceptance entry model diagnosis)
+**Last Updated**: 2026-03-01 (v3.4 — OR Acceptance v3 entry model, v2 deprecated)
 **Instrument**: MNQ (Micro E-mini Nasdaq-100)
 **Data**: 259 RTH sessions, 2,000+ trades analyzed
 **Accounts**: 5 x TradeDay/Tradeify Lightning $150K
@@ -17,7 +17,7 @@
 | **Balance Day IBL Fade** (B-day + first touch) | Balance days, IBL touch | 3.4 | 82% | 9.35 | **$1,730** | [balance-day-edge-fade/](balance-day-edge-fade/) |
 | **20P IB Extension** (2xATR + 2R) | IB breakout continuation | 3.7 | 45.5% | 1.78 | **$496** | [20p-rule/](20p-rule/) |
 | **OR Reversal** (Judas Swing) | Sweep + reversal at open | 9.6 | 60.9% | 2.96 | **$2,720** | [exploratory/](exploratory/) |
-| **OR Acceptance** (Break + Hold) | Level break + continuation | 5.9 | 43.7% | 1.32 | **$264** | [exploratory/](exploratory/) |
+| **OR Acceptance v3** (Break + Hold) | Level break + limit retest | 5.9 | v2: 43.7% → v3: ~96%* | v2: 1.32 | **v3 pending** | [exploratory/](exploratory/) |
 | **Combined** | — | **~26** | — | — | **~$7,132** | — |
 
 **For evaluation passing** (fast, aggressive): Use [Dual Order Flow](dual-order-flow/) at 31 MNQ — $1,027/day, pass $9K in ~9 days.
@@ -146,28 +146,50 @@
 
 ---
 
-### 5. OR Acceptance — Level Break + Continuation
+### 5. OR Acceptance v3 — Level Break + Limit Retest
 
-**Concept**: Price breaks a key level at the open and HOLDS it (acceptance, not fake sweep). Enter on the 50% retest of the continuation move.
+**Concept**: Price breaks a key level at the open and HOLDS it (acceptance, not fake sweep). Enter via limit order AT the acceptance level on the retest pullback.
 
-| Parameter | Value |
-|-----------|-------|
-| **Acceptance check** | 70% of IB (60-bar) closes on correct side of level, <=5 wick violations |
-| **Levels** | London H/L, Asia H/L, PDH/PDL |
-| **Entry** | 50% retest of acceptance range + delta/CVD confirmation |
-| **Direction** | Both (SHORT 44.8% WR, LONG 42.9% WR) |
-| **Stop** | Acceptance level + 0.5 ATR buffer |
-| **Target** | 2R |
-| **Frequency** | 5.9 trades/month |
-| **Win Rate** | 43.7% |
-| **Profit Factor** | 1.32 |
-| **Monthly P&L** | $264 (5 MNQ) |
+| Parameter | v3 (CURRENT) | v2 (DEPRECATED — broken entry) |
+|-----------|-------------|-------------------------------|
+| **Acceptance check** | 2x consecutive 5-min closes beyond the level | 70% of IB closes on correct side, <=5 wick violations |
+| **Levels** | London H/L, Asia H/L, PDH/PDL | Same |
+| **Entry** | **Limit order AT the acceptance level on retest** | 50% retrace of IB range (avg 70 pts from level) |
+| **Direction** | Both | Both |
+| **Stop** | Acceptance level ± 0.5 ATR buffer (~15 pts risk) | Acceptance level + 0.5 ATR (avg 70 pts risk) |
+| **Target** | 2R (~30 pts) | 2R (~140 pts) |
+| **Filter** | Skip BOTH sessions (Judas + Accept on diff levels) | None |
+| **Window** | 9:30–10:30 AM | Full IB (9:30–10:30) |
 
-**v2 optimization** (2026-02-27): Expanded from London-only (0 trades) to all reference levels, relaxed acceptance conditions. See [exploratory/2026.02.27-or-acceptance-optimization.md](exploratory/2026.02.27-or-acceptance-optimization.md).
+**v2 was broken — entry model root cause** (2026-03-01):
 
-**v3 proposed** (2026-03-01): Entry model fix — limit retest at acceptance level instead of 50% retrace. Entries close to level (≤20 pts risk) = 96% WR. Current 50% retrace entries (avg 70 pts risk) = 44% WR. See [exploratory/2026.03.01-premarket-acceptance-conditions.md](exploratory/2026.03.01-premarket-acceptance-conditions.md).
+| Risk Bucket (entry→stop) | Trades | WR | PF | Net P&L |
+|:---|---:|---:|---:|---:|
+| **≤20 pts (at the level)** | **25** | **96%** | **1689** | **+$9,250** |
+| 20–60 pts | 6 | 17% | 0.34 | −$1,238 |
+| >60 pts (chasing) | 40 | 15% | 0.40 | −$4,839 |
 
-**Code**: [`strategy/or_acceptance.py`](../../strategy/or_acceptance.py)
+The 50% retrace entry put you 50-100 pts from the acceptance level. Tight entries at the level dominate.
+
+**v3 stats**: Pending proper limit-fill simulation on 1-min bars (does price actually retrace to the level after 2x 5-min acceptance?). The 25 trades with ≤20 pts risk show 96% WR — v3 targets this entry profile systematically.
+
+**Head-to-head vs OR Reversal:**
+
+| Metric | OR Reversal | OR Acceptance v2 |
+|:---|:---|:---|
+| Trades | 115 (9.3/mo) | 71 (5.8/mo) |
+| Win Rate | **60.9%** | 43.7% |
+| Profit Factor | **2.96** | 1.32 |
+| Expectancy | **$284/trade** | $45/trade |
+| Monthly P&L | **$2,646/mo** | $257/mo |
+
+OR Reversal is 6x more profitable per trade. OR Acceptance v3 with level-retest entries should close this gap.
+
+**BOTH sessions** (Judas sweep + acceptance on different levels): 25% WR, PF 0.58, −$993. **Skip these.**
+
+**Studies**: [v2 optimization](exploratory/2026.02.27-or-acceptance-optimization.md) | [v3 entry diagnosis](exploratory/2026.03.01-premarket-acceptance-conditions.md)
+
+**Code**: [`strategy/or_acceptance.py`](../../strategy/or_acceptance.py) (still v2 — v3 implementation pending)
 
 ---
 
@@ -206,7 +228,7 @@
 4. **Stop placement matters more than entry depth** — VA-edge stops (58–66% WR) vs candle-extreme (5–14%).
 5. **Balance days are 43% of sessions** and detectable at 10:30 via IB POC shape.
 6. **DPOC stabilizing regime** confirms balance rotation — use as secondary filter, not primary.
-7. **Five strategies are complementary** — 80P (VA days), B-Day Fade (balance), 20P (breakout), OR Rev (sweep), OR Accept (break).
+7. **Five strategies are complementary** — 80P (VA days), B-Day Fade (balance), 20P (breakout), OR Rev (sweep), OR Accept v3 (break + limit retest).
 8. **OR Reversal is the top performer** — 60.9% WR, PF 2.96, $2,720/mo. LONG direction dominates (75% WR).
 9. **OR Acceptance needed expanded levels** — London-only produced 0 trades; adding Asia H/L + PDH/PDL → 71 trades.
 10. **IB window (60 bars) beats EOR (30 bars) for acceptance** — 43.7% vs 40.7% WR, more time for true acceptance to establish.
@@ -309,5 +331,5 @@ research/strategy-studies/
 
 ---
 
-*Version: 3.3 — OR Acceptance entry model diagnosis + v3 proposed fix.*
-*Previous: v3.1 (OR Rev + Accept), v3.0 (reorganized), MASTER_INDEX.md (deprecated)*
+*Version: 3.4 — OR Acceptance v3 entry model (limit retest), v2 deprecated.*
+*Previous: v3.3 (diagnosis), v3.1 (OR Rev + Accept), v3.0 (reorganized), MASTER_INDEX.md (deprecated)*
